@@ -1,22 +1,24 @@
-# Licensed under the CC BY-NC 4.0 license (https://creativecommons.org/licenses/by-nc/4.0/)
-from typing import List, Optional, Tuple, Union
+from __future__ import annotations
+
+from typing import Optional, Sequence
 
 import jax.numpy as jnp
 from flax import nnx
 
 
-def _activation_fn(activation: str):
-    if activation == "relu":
+def _get_activation(name: str):
+    if name == "relu":
         return nnx.relu
-    if activation == "gelu":
+    if name == "gelu":
         return nnx.gelu
-    raise RuntimeError(f"activation {activation} not implemented")
+    raise RuntimeError(f"activation {name} not implemented")
 
 
 class MLP(nnx.Module):
     def __init__(
         self,
-        fc_dims: Union[List[int], Tuple[int, ...]],
+        fc_dims: Sequence[int],
+        rngs: nnx.Rngs,
         dropout_p: Optional[float] = None,
         use_layernorm: bool = False,
         activation: str = "relu",
@@ -24,69 +26,89 @@ class MLP(nnx.Module):
         init_weight_norm: bool = False,
         init_bias: Optional[float] = None,
         use_batchnorm: bool = False,
-        *,
-        rngs: nnx.Rngs,
     ) -> None:
-        assert len(fc_dims) >= 2
-        assert not (use_layernorm and use_batchnorm)
-        if use_batchnorm:
-            raise NotImplementedError("BatchNorm in this MLP is not supported in JAX path.")
+        if len(fc_dims) < 2:
+            raise ValueError("fc_dims should include input and output dimensions")
+        if use_layernorm and use_batchnorm:
+            raise ValueError("use_layernorm and use_batchnorm are mutually exclusive")
 
-        self.fc_dims = tuple(fc_dims)
+        self.input_dim = int(fc_dims[0])
+        self.output_dim = int(fc_dims[-1])
         self.dropout_p = dropout_p
         self.use_layernorm = use_layernorm
-        self.activation = activation
+        self.use_batchnorm = use_batchnorm
         self.end_layer_activation = end_layer_activation
         self.init_weight_norm = init_weight_norm
+        self.init_bias = init_bias
+        self.activation = _get_activation(activation)
 
-        self.layers = []
-        self.norms = []
-        self.dropouts = []
+        self.fc_layers = []
+        self.norm_layers = []
+        self.dropout_layers = []
 
-        for i in range(len(self.fc_dims) - 1):
-            in_dim, out_dim = self.fc_dims[i], self.fc_dims[i + 1]
-            bias_init = nnx.initializers.zeros
-            if i == len(self.fc_dims) - 2 and init_bias is not None:
-                bias_init = nnx.initializers.constant(init_bias)
-            dense = nnx.Linear(in_dim, out_dim, use_bias=True, kernel_init=nnx.initializers.lecun_normal(), bias_init=bias_init, rngs=rngs)
-            self.layers.append(dense)
+        for i in range(len(fc_dims) - 1):
+            in_dim = int(fc_dims[i])
+            out_dim = int(fc_dims[i + 1])
+            dense = nnx.Linear(in_dim, out_dim, rngs=rngs)
 
-            apply_post = (i < len(self.fc_dims) - 2) or self.end_layer_activation
-            if apply_post and self.use_layernorm:
-                self.norms.append(nnx.LayerNorm(num_features=out_dim, rngs=rngs))
-            else:
-                self.norms.append(None)
+            if init_weight_norm:
+                w = dense.kernel.value
+                norm = jnp.linalg.norm(w, axis=0, keepdims=True)
+                dense.kernel.value = w / jnp.maximum(norm, 1e-8)
+            if init_bias is not None and i == len(fc_dims) - 2:
+                dense.bias.value = jnp.full_like(dense.bias.value, init_bias)
 
-            if apply_post and self.dropout_p is not None:
-                self.dropouts.append(nnx.Dropout(rate=self.dropout_p, rngs=rngs))
-            else:
-                self.dropouts.append(None)
+            self.fc_layers.append(dense)
+
+            is_last = i == len(fc_dims) - 2
+            if (not is_last) or end_layer_activation:
+                if use_layernorm:
+                    self.norm_layers.append(nnx.LayerNorm(num_features=out_dim, rngs=rngs))
+                elif use_batchnorm:
+                    self.norm_layers.append(nnx.BatchNorm(num_features=out_dim, rngs=rngs))
+                else:
+                    self.norm_layers.append(None)
+
+                if dropout_p is not None:
+                    self.dropout_layers.append(nnx.Dropout(rate=dropout_p, rngs=rngs))
+                else:
+                    self.dropout_layers.append(None)
 
     def __call__(
         self,
         x: jnp.ndarray,
         valid_mask: Optional[jnp.ndarray] = None,
         fill_invalid: float = 0.0,
+        *,
         deterministic: bool = True,
     ) -> jnp.ndarray:
-        act = _activation_fn(self.activation)
-        out = x
-        n_layers = len(self.layers)
+        leading_shape = x.shape[:-1]
+        h = x.reshape((-1, x.shape[-1]))
 
-        for i in range(n_layers):
-            out = self.layers[i](out)
+        norm_dropout_idx = 0
+        for i, layer in enumerate(self.fc_layers):
+            h = layer(h)
+            is_last = i == len(self.fc_layers) - 1
 
-            if self.init_weight_norm:
-                out = out / (jnp.linalg.norm(out, axis=-1, keepdims=True) + 1e-8)
+            if (not is_last) or self.end_layer_activation:
+                norm_layer = self.norm_layers[norm_dropout_idx]
+                if norm_layer is not None:
+                    if self.use_batchnorm:
+                        h = norm_layer(h, use_running_average=deterministic)
+                    else:
+                        h = norm_layer(h)
 
-            apply_post = (i < n_layers - 1) or self.end_layer_activation
-            if apply_post:
-                if self.norms[i] is not None:
-                    out = self.norms[i](out)
-                if self.dropouts[i] is not None:
-                    out = self.dropouts[i](out, deterministic=deterministic)
-                out = act(out)
+                dropout_layer = self.dropout_layers[norm_dropout_idx]
+                if dropout_layer is not None:
+                    h = dropout_layer(h, deterministic=deterministic)
 
+                if not is_last:
+                    h = self.activation(h)
+                norm_dropout_idx += 1
+
+        h = h.reshape(leading_shape + (self.output_dim,))
         if valid_mask is not None:
-            out = jnp.where(valid_mask[..., None], out, jnp.asarray(fill_invalid, dtype=out.dtype))
-        return out
+            h = jnp.where(valid_mask[..., None], h, jnp.array(fill_invalid, dtype=h.dtype))
+        if self.end_layer_activation:
+            h = self.activation(h)
+        return h

@@ -1,4 +1,6 @@
-from typing import Dict
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
 
 import jax
 import jax.numpy as jnp
@@ -9,133 +11,194 @@ from .mlp import MLP
 from .point_net import PointNet
 
 
-class GRUCell(nnx.Module):
-    def __init__(self, input_size: int, hidden_size: int, *, rngs: nnx.Rngs):
-        k1 = rngs()
-        k2 = rngs()
-        k3 = rngs()
-        k4 = rngs()
-        self.weight_ih = nnx.Param(jax.random.normal(k1, (3 * hidden_size, input_size), dtype=jnp.float32) * 0.02)
-        self.weight_hh = nnx.Param(jax.random.normal(k2, (3 * hidden_size, hidden_size), dtype=jnp.float32) * 0.02)
-        self.bias_ih = nnx.Param(jax.random.normal(k3, (3 * hidden_size,), dtype=jnp.float32) * 0.02)
-        self.bias_hh = nnx.Param(jax.random.normal(k4, (3 * hidden_size,), dtype=jnp.float32) * 0.02)
-
-    def __call__(self, carry: jnp.ndarray, x: jnp.ndarray):
-        gi = x @ self.weight_ih.value.T + self.bias_ih.value
-        gh = carry @ self.weight_hh.value.T + self.bias_hh.value
-        i_r, i_z, i_n = jnp.split(gi, 3, axis=-1)
-        h_r, h_z, h_n = jnp.split(gh, 3, axis=-1)
-        r = jax.nn.sigmoid(i_r + h_r)
-        z = jax.nn.sigmoid(i_z + h_z)
-        n = jnp.tanh(i_n + r * h_n)
-        h_new = (1.0 - z) * n + z * carry
-        return h_new, h_new
-
-
-class StackedGRU(nnx.Module):
-    def __init__(self, hidden_size: int, num_layers: int = 2, *, rngs: nnx.Rngs):
-        self.hidden_size = hidden_size
-        self.cells = [GRUCell(hidden_size, hidden_size, rngs=rngs) for _ in range(num_layers)]
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # x: [B, T, H]
-        b, t, _ = x.shape
-        carry = [jnp.zeros((b, self.hidden_size), dtype=x.dtype) for _ in self.cells]
-        outputs = []
-        for i in range(t):
-            h = x[:, i, :]
-            next_carry = []
-            for li, cell in enumerate(self.cells):
-                c, h = cell(carry[li], h)
-                next_carry.append(c)
-            carry = next_carry
-            outputs.append(h)
-        return jnp.stack(outputs, axis=1)
-
-
 class DiffusionPolicy(nnx.Module):
     def __init__(
         self,
         target_dim: int,
         hidden_dim: int,
         cond_dim: int,
-        lidar_attr_dim: int,
         map_attr_dim: int,
         tl_attr_dim: int,
-        goal_dim: int = 2,
+        rngs: nnx.Rngs,
+        ego_dim: int = 5,
+        other_dim: int = 7,
         predict_type: str = "v",
         predict_horizon: int = 16,
-        compute_dtype: jnp.dtype = jnp.float32,
-        *,
-        rngs: nnx.Rngs,
-    ):
+        **kwargs: Any,
+    ) -> None:
+        del kwargs
         self.target_dim = target_dim
         self.predict_horizon = predict_horizon
-        self.compute_dtype = compute_dtype
 
-        self.lidar_projection = PointNet(input_dim=lidar_attr_dim, hidden_dim=hidden_dim, rngs=rngs)
-        self.map_projection = PointNet(input_dim=map_attr_dim, hidden_dim=hidden_dim, rngs=rngs)
-        self.tl_projection = PointNet(input_dim=tl_attr_dim, hidden_dim=hidden_dim, rngs=rngs)
-        self.goal_projection = MLP(fc_dims=[goal_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
+        self.input_projections = {
+            "ego": MLP([ego_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs),
+            "other": PointNet(other_dim, hidden_dim, rngs=rngs),
+            "map": PointNet(map_attr_dim, hidden_dim, rngs=rngs),
+            "tl": PointNet(tl_attr_dim, hidden_dim, rngs=rngs),
+        }
+        self.cond_projection = MLP([hidden_dim * 4, hidden_dim, cond_dim], rngs=rngs)
 
-        self.lidar_history_projection = StackedGRU(hidden_size=hidden_dim, num_layers=2, rngs=rngs)
-        self.cond_projection = MLP(fc_dims=[hidden_dim * 4, hidden_dim, cond_dim], rngs=rngs)
-
+        denoise_fn = UNet1DConditioned(
+            in_ch=target_dim,
+            base_ch=hidden_dim,
+            cond_dim=cond_dim,
+            time_emb_dim=hidden_dim,
+            rngs=rngs,
+        )
         self.diffusion = GaussianDiffusion(
-            denoise_fn=UNet1DConditioned(
-                in_ch=target_dim,
-                base_ch=hidden_dim,
-                cond_dim=cond_dim,
-                time_emb_dim=hidden_dim,
-                compute_dtype=compute_dtype,
-                rngs=rngs,
-            ),
-            timesteps=100,
+            denoise_fn=denoise_fn,
+            timesteps=50,
             predict_type=predict_type,
         )
-        self._forward_jit_fn = nnx.jit(lambda m, feats, k: m(feats, key=k))
-        self._loss_jit_fn = nnx.jit(lambda m, feats, k: m.loss(feats, key=k))
 
-    def _cast_features(self, input_features: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        out = {}
-        for k, v in input_features.items():
-            if jnp.issubdtype(v.dtype, jnp.bool_):
-                out[k] = v
-            else:
-                out[k] = v.astype(self.compute_dtype)
-        return out
+        self._jit_input_features_projection = nnx.jit(self._input_features_projection_impl)
+        self._jit_loss_with_noise_t = nnx.jit(self._loss_with_noise_t_impl)
+        self._jit_sample_with_fixed_noises = nnx.jit(self._sample_with_fixed_noises_impl)
+        self._jit_resample_with_fixed_noises = nnx.jit(self._resample_with_fixed_noises_impl, static_argnums=(2,))
 
-    def input_features_projection(self, input_features: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        input_features = self._cast_features(input_features)
-        _, history_len, n_points, d_lidar = input_features["lidar_points"].shape
-        lidar_features = input_features["lidar_points"].reshape(-1, n_points, d_lidar)
-        lidar_valid = input_features["lidar_valid"].reshape(-1, n_points)
-        lidar_feature = self.lidar_projection(lidar_features, lidar_valid)
-        lidar_feature = lidar_feature.reshape(-1, history_len, lidar_feature.shape[-1])
-        lidar_feature = self.lidar_history_projection(lidar_feature)
-        lidar_feature = lidar_feature[:, -1, :]
+    def _input_features_projection_impl(self, input_features: Dict[str, jnp.ndarray], deterministic: bool = True) -> jnp.ndarray:
+        ego_feature = self.input_projections["ego"](input_features["ego_state"], deterministic=deterministic)
+        other_feature = self.input_projections["other"](
+            input_features["other_states"],
+            input_features["other_valid"],
+            deterministic=deterministic,
+        )
+        map_features = self.input_projections["map"](
+            input_features["map_features"],
+            input_features["map_valid"],
+            deterministic=deterministic,
+        )
+        traffic_light_features = self.input_projections["tl"](
+            input_features["traffic_light_features"],
+            input_features["traffic_light_valid"],
+            deterministic=deterministic,
+        )
 
-        map_features = self.map_projection(input_features["map_features"], input_features["map_valid"])
-        traffic_light_features = self.tl_projection(input_features["traffic_light_features"], input_features["traffic_light_valid"])
-        goal_features = self.goal_projection(input_features["goal_position"])
+        cond = jnp.concatenate([ego_feature, other_feature, map_features, traffic_light_features], axis=-1)
+        return self.cond_projection(cond, deterministic=deterministic)
 
-        cond = jnp.concatenate([lidar_feature, map_features, traffic_light_features, goal_features], axis=-1)
-        return self.cond_projection(cond)
+    def input_features_projection(self, input_features: Dict[str, jnp.ndarray], deterministic: bool = True) -> jnp.ndarray:
+        return self._jit_input_features_projection(input_features, deterministic)
 
-    def __call__(self, input_features: Dict[str, jnp.ndarray], *, key: jax.Array) -> jnp.ndarray:
-        batch_size = input_features["lidar_points"].shape[0]
-        cond = self.input_features_projection(input_features)
-        pred = self.diffusion.sample(shape=(batch_size, self.target_dim, self.predict_horizon), cond=cond, key=key)
+    def _sample_with_fixed_noises_impl(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        x_init: jnp.ndarray,
+        step_noises: jnp.ndarray,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        batch_size = input_features["ego_state"].shape[0]
+        cond = self._input_features_projection_impl(input_features, deterministic=deterministic)
+        pred = self.diffusion.sample(
+            shape=(batch_size, self.target_dim, self.predict_horizon),
+            cond=cond,
+            x_init=x_init,
+            step_noises=step_noises,
+        )
         return jnp.transpose(pred, (0, 2, 1))
 
-    def forward_jit(self, input_features: Dict[str, jnp.ndarray], *, key: jax.Array) -> jnp.ndarray:
-        return self._forward_jit_fn(self, input_features, key)
-
-    def loss(self, input_features: Dict[str, jnp.ndarray], *, key: jax.Array) -> jnp.ndarray:
-        input_features = self._cast_features(input_features)
+    def _loss_with_noise_t_impl(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        noise: jnp.ndarray,
+        t: jnp.ndarray,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
         target = input_features["ego_trajectory"][:, : self.predict_horizon, :]
-        cond = self.input_features_projection(input_features)
-        return self.diffusion.loss(jnp.transpose(target, (0, 2, 1)), cond=cond, key=key)
+        cond = self._input_features_projection_impl(input_features, deterministic=deterministic)
+        return self.diffusion._loss_with_noise_t_impl(jnp.transpose(target, (0, 2, 1)), cond=cond, noise=noise, t=t)
 
-    def loss_jit(self, input_features: Dict[str, jnp.ndarray], *, key: jax.Array) -> jnp.ndarray:
-        return self._loss_jit_fn(self, input_features, key)
+    def _resample_with_fixed_noises_impl(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        proposals: jnp.ndarray,
+        n_timesteps: int,
+        q_noise: jnp.ndarray,
+        step_noises: jnp.ndarray,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        batch_size = input_features["ego_state"].shape[0]
+        if int(step_noises.shape[0]) != int(n_timesteps):
+            raise ValueError("step_noises length must equal n_timesteps")
+
+        cond = self._input_features_projection_impl(input_features, deterministic=deterministic)
+        t0 = jnp.full((batch_size,), n_timesteps - 1, dtype=jnp.int32)
+        x = self.diffusion.q_sample(jnp.transpose(proposals, (0, 2, 1)), t0, noise=q_noise)
+
+        def body(i: int, x_curr: jnp.ndarray) -> jnp.ndarray:
+            timestep = n_timesteps - 1 - i
+            t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
+            return self.diffusion.p_sample(x_curr, t, cond, step_noises[timestep])
+
+        x = jax.lax.fori_loop(0, n_timesteps, body, x)
+        return jnp.transpose(x, (0, 2, 1))
+
+    def forward(self, input_features: Dict[str, jnp.ndarray], rng: jax.Array, deterministic: bool = True) -> jnp.ndarray:
+        return self.sample(input_features, rng=rng, deterministic=deterministic)
+
+    def sample(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        *,
+        rng: Optional[jax.Array] = None,
+        x_init: Optional[jnp.ndarray] = None,
+        step_noises: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        if x_init is not None and step_noises is not None:
+            return self._jit_sample_with_fixed_noises(input_features, x_init, step_noises, deterministic)
+        if rng is None:
+            raise ValueError("Provide either (x_init and step_noises) or rng")
+        batch_size = input_features["ego_state"].shape[0]
+        key_x, key_steps = jax.random.split(rng)
+        x_init = jax.random.normal(key_x, (batch_size, self.target_dim, self.predict_horizon), dtype=jnp.float32)
+        step_noises = jax.random.normal(
+            key_steps,
+            (self.diffusion.timesteps, batch_size, self.target_dim, self.predict_horizon),
+            dtype=jnp.float32,
+        )
+        return self._jit_sample_with_fixed_noises(input_features, x_init, step_noises, deterministic)
+
+    def loss(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        *,
+        rng: Optional[jax.Array] = None,
+        noise: Optional[jnp.ndarray] = None,
+        t: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        if noise is not None and t is not None:
+            return self._loss_with_noise_t_impl(input_features, noise, t, deterministic)
+        if rng is None:
+            raise ValueError("Provide either (noise and t) or rng")
+        batch_size = input_features["ego_state"].shape[0]
+        key_t, key_noise = jax.random.split(rng)
+        t = jax.random.randint(key_t, (batch_size,), 0, self.diffusion.timesteps, dtype=jnp.int32)
+        noise = jax.random.normal(key_noise, (batch_size, self.target_dim, self.predict_horizon), dtype=jnp.float32)
+        return self._jit_loss_with_noise_t(input_features, noise, t, deterministic)
+
+    def resample(
+        self,
+        input_features: Dict[str, jnp.ndarray],
+        proposals: jnp.ndarray,
+        n_timesteps: int,
+        *,
+        rng: Optional[jax.Array] = None,
+        q_noise: Optional[jnp.ndarray] = None,
+        step_noises: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        if q_noise is not None and step_noises is not None:
+            return self._jit_resample_with_fixed_noises(input_features, proposals, n_timesteps, q_noise, step_noises, deterministic)
+        if rng is None:
+            raise ValueError("Provide either (q_noise and step_noises) or rng")
+        batch_size = input_features["ego_state"].shape[0]
+        key_q, key_steps = jax.random.split(rng)
+        q_noise = jax.random.normal(key_q, (batch_size, self.target_dim, self.predict_horizon), dtype=jnp.float32)
+        step_noises = jax.random.normal(
+            key_steps,
+            (n_timesteps, batch_size, self.target_dim, self.predict_horizon),
+            dtype=jnp.float32,
+        )
+        return self._jit_resample_with_fixed_noises(input_features, proposals, n_timesteps, q_noise, step_noises, deterministic)
