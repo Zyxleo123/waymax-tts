@@ -4,6 +4,9 @@
 # eureka drive
 eureka_drive/
 
+# womd_rl
+womd_rl/
+
 # legacy code
 legacy_model/
 legacy_data/
@@ -14,3 +17,6 @@ program_search_modules_design.md
 
 # tests
 tests/
+
+# benchmarks
+benchmarks/
