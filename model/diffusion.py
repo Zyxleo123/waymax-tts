@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -32,12 +32,10 @@ class Conv1dBlock(nnx.Module):
         )
         self.gn = nnx.GroupNorm(num_features=out_ch, num_groups=min(groups, out_ch), epsilon=1e-5, rngs=rngs)
 
-    def __call__(self, x_bct: jnp.ndarray) -> jnp.ndarray:
-        x_btc = jnp.swapaxes(x_bct, 1, 2)
+    def __call__(self, x_btc: jnp.ndarray) -> jnp.ndarray:
         h_btc = self.conv(x_btc)
         h_btc = self.gn(h_btc)
-        h_btc = nnx.silu(h_btc)
-        return jnp.swapaxes(h_btc, 1, 2)
+        return nnx.silu(h_btc)
 
 
 class Identity1d(nnx.Module):
@@ -53,21 +51,16 @@ class ResBlock1d(nnx.Module):
         self.block2 = Conv1dBlock(out_ch, out_ch, rngs=rngs, kernel=3, groups=groups)
         self.skip = Identity1d() if in_ch == out_ch else nnx.Conv(in_features=in_ch, out_features=out_ch, kernel_size=(1,), padding="SAME", rngs=rngs)
 
-    def __call__(self, x: jnp.ndarray, cond_feat: jnp.ndarray, time_feat: jnp.ndarray) -> jnp.ndarray:
-        t_len = x.shape[-1]
-        cond = self.cond(jnp.swapaxes(cond_feat, 1, 2))
-        tim = self.time(jnp.swapaxes(time_feat, 1, 2))
-        cond = jnp.swapaxes(cond, 1, 2)
-        tim = jnp.swapaxes(tim, 1, 2)
-
-        h = x + jnp.broadcast_to(cond, (x.shape[0], cond.shape[1], t_len)) + jnp.broadcast_to(tim, (x.shape[0], tim.shape[1], t_len))
+    def __call__(self, x_btc: jnp.ndarray, cond_feat_b1c: jnp.ndarray, time_feat_b1c: jnp.ndarray) -> jnp.ndarray:
+        cond_b1c = self.cond(cond_feat_b1c)
+        time_b1c = self.time(time_feat_b1c)
+        h = x_btc + cond_b1c + time_b1c
         h = self.block1(h)
         h = self.block2(h)
 
         if isinstance(self.skip, Identity1d):
-            return h + x
-        skip = self.skip(jnp.swapaxes(x, 1, 2))
-        skip = jnp.swapaxes(skip, 1, 2)
+            return h + x_btc
+        skip = self.skip(x_btc)
         return h + skip
 
 
@@ -75,20 +68,17 @@ class Downsample1d(nnx.Module):
     def __init__(self, ch: int, rngs: nnx.Rngs):
         self.conv = nnx.Conv(in_features=ch, out_features=ch, kernel_size=(4,), strides=(2,), padding=((1, 1),), rngs=rngs)
 
-    def __call__(self, x_bct: jnp.ndarray) -> jnp.ndarray:
-        y_btc = self.conv(jnp.swapaxes(x_bct, 1, 2))
-        return jnp.swapaxes(y_btc, 1, 2)
+    def __call__(self, x_btc: jnp.ndarray) -> jnp.ndarray:
+        return self.conv(x_btc)
 
 
 class Upsample1d(nnx.Module):
     def __init__(self, ch: int, rngs: nnx.Rngs):
         self.conv = nnx.Conv(in_features=ch, out_features=ch, kernel_size=(3,), padding="SAME", rngs=rngs)
 
-    def __call__(self, x_bct: jnp.ndarray) -> jnp.ndarray:
-        x_btc = jnp.swapaxes(x_bct, 1, 2)
+    def __call__(self, x_btc: jnp.ndarray) -> jnp.ndarray:
         x_btc = jax.image.resize(x_btc, shape=(x_btc.shape[0], x_btc.shape[1] * 2, x_btc.shape[2]), method="nearest")
-        y_btc = self.conv(x_btc)
-        return jnp.swapaxes(y_btc, 1, 2)
+        return self.conv(x_btc)
 
 
 class Projector(nnx.Module):
@@ -159,11 +149,10 @@ class UNet1DConditioned(nnx.Module):
             x = jnp.pad(x, ((0, 0), (0, 0), (0, target_t - orig_t)), mode="constant")
 
         t_emb = sinusoidal_timestep_embedding(t, self.time_emb_dim)
-        cond_feat = self.cond_proj(c)[:, :, None]
-        time_feat = self.time_proj(t_emb)[:, :, None]
+        cond_feat = self.cond_proj(c)[:, None, :]
+        time_feat = self.time_proj(t_emb)[:, None, :]
 
         h = self.stem(jnp.swapaxes(x, 1, 2))
-        h = jnp.swapaxes(h, 1, 2)
 
         skips = []
         rb = 0
@@ -180,24 +169,22 @@ class UNet1DConditioned(nnx.Module):
         rb_up = 0
         for i in range(self.n_down):
             skip = skips.pop()
-            if h.shape[-1] != skip.shape[-1]:
-                min_len = min(h.shape[-1], skip.shape[-1])
-                h = h[..., :min_len]
-                skip = skip[..., :min_len]
+            if h.shape[1] != skip.shape[1]:
+                min_len = min(h.shape[1], skip.shape[1])
+                h = h[:, :min_len, :]
+                skip = skip[:, :min_len, :]
 
             for _ in range(self.num_res_blocks):
-                h = jnp.concatenate([h, skip], axis=1)
+                h = jnp.concatenate([h, skip], axis=-1)
                 h = self.up_blocks[rb_up](h, cond_feat, time_feat)
                 rb_up += 1
 
             h = self.upsamples[i](h)
 
-        h = jnp.swapaxes(h, 1, 2)
         h = self.out_norm(h)
         h = nnx.silu(h)
         h = self.out_conv(h)
-        h = jnp.swapaxes(h, 1, 2)
-        return h[:, :, :orig_t]
+        return jnp.swapaxes(h[:, :orig_t, :], 1, 2)
 
 
 def make_beta_schedule(timesteps: int, schedule: str = "cosine") -> jnp.ndarray:
@@ -218,7 +205,7 @@ class GaussianDiffusion(nnx.Module):
     def __init__(
         self,
         denoise_fn: nnx.Module,
-        timesteps: int = 50,
+        timesteps: int = 100,
         beta_schedule: str = "cosine",
         predict_type: str = "v",
         clip_denoised: bool = False,
@@ -248,17 +235,16 @@ class GaussianDiffusion(nnx.Module):
         self.posterior_mean_coef1 = nnx.Variable(betas * jnp.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod))
         self.posterior_mean_coef2 = nnx.Variable((1.0 - alphas_cumprod_prev) * jnp.sqrt(alphas) / (1.0 - alphas_cumprod))
 
-        self._jit_loss_with_noise_t = nnx.jit(self._loss_with_noise_t_impl)
-        self._jit_sample_with_fixed_noises = nnx.jit(self._sample_with_fixed_noises_impl)
+        self._jit_loss = nnx.jit(self._loss_impl)
+        self._jit_sample = nnx.jit(self._sample_impl, static_argnums=(0,))
+        self._jit_resample = nnx.jit(self._resample_impl, static_argnums=(2,))
 
     @staticmethod
     def _extract(a: jnp.ndarray, t: jnp.ndarray, x_shape: Sequence[int]) -> jnp.ndarray:
         out = a[t]
         return out.reshape((x_shape[0], 1, 1))
 
-    def q_sample(self, x0: jnp.ndarray, t: jnp.ndarray, noise: Optional[jnp.ndarray] = None) -> jnp.ndarray:
-        if noise is None:
-            raise ValueError("q_sample requires explicit noise for deterministic behavior")
+    def q_sample(self, x0: jnp.ndarray, t: jnp.ndarray, noise: jnp.ndarray) -> jnp.ndarray:
         sqrt_ab = self._extract(self.sqrt_alphas_cumprod.value, t, x0.shape)
         sqrt_1mab = self._extract(self.sqrt_one_minus_alphas_cumprod.value, t, x0.shape)
         return sqrt_ab * x0 + sqrt_1mab * noise
@@ -294,25 +280,24 @@ class GaussianDiffusion(nnx.Module):
         nonzero_mask = (t != 0).astype(x_t.dtype).reshape((-1, 1, 1))
         return mean + nonzero_mask * jnp.sqrt(var) * noise
 
-    def _sample_with_fixed_noises_impl(
-        self,
-        shape: Tuple[int, int, int],
-        cond: jnp.ndarray,
-        x_init: jnp.ndarray,
-        step_noises: jnp.ndarray,
-    ) -> jnp.ndarray:
-        del shape
-        batch_size = x_init.shape[0]
-        num_steps = step_noises.shape[0]
+    def _sample_impl(self, shape: Tuple[int, int, int], cond: jnp.ndarray, rng: jax.Array) -> jnp.ndarray:
+        batch_size = shape[0]
+        key_x, key_steps = jax.random.split(rng)
+        x_init = jax.random.normal(key_x, shape, dtype=jnp.float32)
+        num_steps = self.timesteps
 
-        def body(i: int, x_curr: jnp.ndarray) -> jnp.ndarray:
+        def body(i: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+            x_curr, key = carry
             timestep = num_steps - 1 - i
             t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
-            return self.p_sample(x_curr, t, cond, step_noises[timestep])
+            key, step_key = jax.random.split(key)
+            noise = jax.random.normal(step_key, shape, dtype=jnp.float32)
+            return self.p_sample(x_curr, t, cond, noise), key
 
-        return jax.lax.fori_loop(0, num_steps, body, x_init)
+        x_final, _ = jax.lax.fori_loop(0, num_steps, body, (x_init, key_steps))
+        return x_final
 
-    def _loss_with_noise_t_impl(self, x0: jnp.ndarray, cond: jnp.ndarray, noise: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    def _compute_loss(self, x0: jnp.ndarray, cond: jnp.ndarray, noise: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         x_t = self.q_sample(x0, t, noise=noise)
         pred = self.denoise_fn(x_t, t, cond)
 
@@ -327,39 +312,57 @@ class GaussianDiffusion(nnx.Module):
             return jnp.mean((pred - v) ** 2)
         raise ValueError(f"Unsupported predict_type: {self.predict_type}")
 
+    def _loss_impl(self, x0: jnp.ndarray, cond: jnp.ndarray, rng: jax.Array) -> jnp.ndarray:
+        batch = x0.shape[0]
+        key_t, key_noise = jax.random.split(rng)
+        t = jax.random.randint(key_t, (batch,), 0, self.timesteps, dtype=jnp.int32)
+        noise = jax.random.normal(key_noise, x0.shape, dtype=jnp.float32)
+        return self._compute_loss(x0, cond, noise, t)
+
+    def _resample_impl(self, proposals: jnp.ndarray, cond: jnp.ndarray, n_timesteps: int, rng: jax.Array) -> jnp.ndarray:
+        batch_size = proposals.shape[0]
+        key_q, key_steps = jax.random.split(rng)
+        q_noise = jax.random.normal(key_q, proposals.shape, dtype=jnp.float32)
+        t0 = jnp.full((batch_size,), n_timesteps - 1, dtype=jnp.int32)
+        x = self.q_sample(proposals, t0, noise=q_noise)
+
+        def body(i: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+            x_curr, key = carry
+            timestep = n_timesteps - 1 - i
+            t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
+            key, step_key = jax.random.split(key)
+            noise = jax.random.normal(step_key, proposals.shape, dtype=jnp.float32)
+            return self.p_sample(x_curr, t, cond, noise), key
+
+        x, _ = jax.lax.fori_loop(0, n_timesteps, body, (x, key_steps))
+        return x
+
     def sample(
         self,
         shape: Tuple[int, int, int],
         cond: jnp.ndarray,
         *,
-        rng: Optional[jax.Array] = None,
-        x_init: Optional[jnp.ndarray] = None,
-        step_noises: Optional[jnp.ndarray] = None,
+        rng: jax.Array,
     ) -> jnp.ndarray:
-        if x_init is not None and step_noises is not None:
-            return self._jit_sample_with_fixed_noises(shape, cond, x_init, step_noises)
-        if rng is None:
-            raise ValueError("Provide either (x_init and step_noises) or rng")
-        key_x, key_steps = jax.random.split(rng)
-        x_init = jax.random.normal(key_x, shape, dtype=jnp.float32)
-        step_noises = jax.random.normal(key_steps, (self.timesteps, *shape), dtype=jnp.float32)
-        return self._jit_sample_with_fixed_noises(shape, cond, x_init, step_noises)
+        return self._jit_sample(shape, cond, rng)
 
     def loss(
         self,
         x0: jnp.ndarray,
         cond: jnp.ndarray,
         *,
-        rng: Optional[jax.Array] = None,
-        noise: Optional[jnp.ndarray] = None,
-        t: Optional[jnp.ndarray] = None,
+        rng: jax.Array,
     ) -> jnp.ndarray:
-        if noise is not None and t is not None:
-            return self._loss_with_noise_t_impl(x0, cond, noise, t)
-        if rng is None:
-            raise ValueError("Provide either (noise and t) or rng")
-        batch = x0.shape[0]
-        key_t, key_noise = jax.random.split(rng)
-        t = jax.random.randint(key_t, (batch,), 0, self.timesteps, dtype=jnp.int32)
-        noise = jax.random.normal(key_noise, x0.shape, dtype=jnp.float32)
-        return self._jit_loss_with_noise_t(x0, cond, noise, t)
+        return self._jit_loss(x0, cond, rng)
+
+    def resample(
+        self,
+        proposals: jnp.ndarray,
+        cond: jnp.ndarray,
+        n_timesteps: int,
+        *,
+        rng: jax.Array,
+    ) -> jnp.ndarray:
+        if n_timesteps <= 0 or n_timesteps > self.timesteps:
+            raise ValueError(f"n_timesteps must be in [1, {self.timesteps}], got {n_timesteps}")
+        return self._jit_resample(proposals, cond, n_timesteps, rng)
