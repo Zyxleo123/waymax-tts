@@ -1,0 +1,13 @@
+numpy>=1.20
+jax>=0.4.6
+tensorflow>=2.11.0
+chex>=0.1.6
+dm_env>=1.6
+flax>=0.6.7
+matplotlib>=3.7.1
+dm-tree>=0.1.8
+immutabledict>=2.2.3
+Pillow>=9.4.0
+mediapy>=1.1.6
+tqdm>=4.65.0
+absl-py>=1.4.0
