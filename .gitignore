@@ -1,6 +1,16 @@
+# pycache
+**/__pycache__/
+
 # eureka drive
 eureka_drive/
-legacy_model/
 
+# legacy code
+legacy_model/
+legacy_data/
+
+# markdown files
 program_search_flow_walkthrough.md
 program_search_modules_design.md
+
+# tests
+tests/
