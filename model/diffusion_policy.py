@@ -11,8 +11,6 @@ from .point_net import PointNet
 
 class GRUCell(nnx.Module):
     def __init__(self, input_size: int, hidden_size: int, *, rngs: nnx.Rngs):
-        self.input_size = input_size
-        self.hidden_size = hidden_size
         k1 = rngs()
         k2 = rngs()
         k3 = rngs()
@@ -37,7 +35,6 @@ class GRUCell(nnx.Module):
 class StackedGRU(nnx.Module):
     def __init__(self, hidden_size: int, num_layers: int = 2, *, rngs: nnx.Rngs):
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
         self.cells = [GRUCell(hidden_size, hidden_size, rngs=rngs) for _ in range(num_layers)]
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -68,14 +65,12 @@ class DiffusionPolicy(nnx.Module):
         goal_dim: int = 2,
         predict_type: str = "v",
         predict_horizon: int = 16,
-        debug_nan_checks: bool = False,
         compute_dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
         self.target_dim = target_dim
         self.predict_horizon = predict_horizon
-        self.debug_nan_checks = debug_nan_checks
         self.compute_dtype = compute_dtype
 
         self.lidar_projection = PointNet(input_dim=lidar_attr_dim, hidden_dim=hidden_dim, rngs=rngs)

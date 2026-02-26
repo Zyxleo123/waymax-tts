@@ -17,13 +17,9 @@ class PointNet(nnx.Module):
         use_batchnorm: bool = False,
         end_layer_activation: bool = True,
         dropout_p: Optional[float] = None,
-        pool_mode: str = "max",
         *,
         rngs: nnx.Rngs,
     ) -> None:
-        self.pool_mode = pool_mode
-        self.hidden_dim = hidden_dim
-
         self.input_mlp = MLP(
             [input_dim, hidden_dim, hidden_dim],
             dropout_p=dropout_p,
