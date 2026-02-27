@@ -191,10 +191,18 @@ class DiffusionPolicy(nnx.Module):
         return self._jit_sample_from_condition(cond, rng)
 
     def loss_from_condition(
-        self, target_btd: jnp.ndarray, cond: jnp.ndarray, *, rng: jax.Array, data_parallel: bool = False
+        self,
+        target_btd: jnp.ndarray,
+        cond: jnp.ndarray,
+        *,
+        rng: jax.Array,
+        data_parallel: bool = False,
+        pre_sharded: bool = False,
     ) -> jnp.ndarray:
         if data_parallel and self._jit_loss_from_condition_sharded is not None:
-            return self._jit_loss_from_condition_sharded(self.shard_trajectory(target_btd), self.shard_condition(cond), rng)
+            traj = target_btd if pre_sharded else self.shard_trajectory(target_btd)
+            cond_in = cond if pre_sharded else self.shard_condition(cond)
+            return self._jit_loss_from_condition_sharded(traj, cond_in, rng)
         return self._jit_loss_from_condition(target_btd, cond, rng)
 
     def resample_from_condition(

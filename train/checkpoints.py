@@ -18,7 +18,7 @@ def _to_jsonable(x: Any) -> Any:
     return str(x)
 
 
-def save_checkpoint(
+def _save_checkpoint_tag(
     save_dir: str,
     train_state: dict[str, Any],
     config_dict: dict[str, Any],
@@ -47,10 +47,67 @@ def save_checkpoint(
     return ckpt_path
 
 
-def restore_checkpoint(path: str) -> dict[str, Any]:
+def save_checkpoint(
+    save_dir: str,
+    config_dict: dict[str, Any],
+    *,
+    epoch: int,
+    global_step,
+    params_state,
+    nonparam_state,
+    opt_state,
+    ema_params,
+    rng_key,
+    save_every: int | None = None,
+) -> None:
+    train_state = {
+        "epoch": jax.numpy.array(epoch, dtype=jax.numpy.int32),
+        "global_step": global_step,
+        "params_state": params_state,
+        "nonparam_state": nonparam_state,
+        "opt_state": opt_state,
+        "ema_params": ema_params,
+        "rng_key": rng_key,
+    }
+    _save_checkpoint_tag(save_dir, train_state, config_dict, tag="latest")
+    if save_every is not None and epoch % save_every == 0:
+        _save_checkpoint_tag(save_dir, train_state, config_dict, tag=f"epoch_{epoch:04d}")
+
+
+def restore_checkpoint(
+    path: str,
+    *,
+    params_state: Any | None = None,
+    nonparam_state: Any | None = None,
+    tx: Any | None = None,
+    coerce_tree_like_fn=None,
+) -> Any:
     checkpointer = ocp.PyTreeCheckpointer()
     restored = checkpointer.restore(path)
-    return restored
+
+    if params_state is None or tx is None:
+        return restored
+
+    loaded_params_state = restored["params_state"]
+    loaded_nonparam_state = restored.get("nonparam_state", nonparam_state)
+    opt_template = tx.init(loaded_params_state)
+    loaded_opt_state = (
+        coerce_tree_like_fn(opt_template, restored["opt_state"])
+        if coerce_tree_like_fn is not None
+        else restored["opt_state"]
+    )
+    loaded_global_step_host = int(restored["global_step"])
+
+    return (
+        loaded_params_state,
+        loaded_nonparam_state,
+        loaded_opt_state,
+        restored["ema_params"],
+        restored["rng_key"],
+        int(restored["epoch"]) + 1,
+        jax.numpy.array(loaded_global_step_host, dtype=jax.numpy.int32),
+        loaded_global_step_host,
+    )
 
 
 def tree_global_norm(tree: Any) -> jax.Array:

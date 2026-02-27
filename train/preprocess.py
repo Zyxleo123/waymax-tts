@@ -251,14 +251,11 @@ def world_to_ego_normalized(
     return ego_norm[:, 1:, :], ego_norm[:, 0, :], other_norm, other_valid_bn
 
 
-def preprocess_simulator_state(
+def _preprocess_single_batch(
     state: datatypes.SimulatorState,
     rng: jax.Array,
     cfg: PreprocessConfig,
 ) -> tuple[PreprocessBatch, jax.Array]:
-    if state.log_trajectory.x.ndim != 3:
-        raise ValueError("Expected batched SimulatorState; set DatasetConfig.batch_dims=(batch_size,)")
-
     bsz = state.log_trajectory.x.shape[0]
     ego_idx = extract_ego_index(state)
     world_dt_b = compute_world_dt_seconds(state, cfg.world_dt_fallback)
@@ -341,3 +338,21 @@ def preprocess_simulator_state(
     }
 
     return PreprocessBatch(features=features, aux=aux), rng
+
+
+def preprocess_simulator_state(
+    state: datatypes.SimulatorState,
+    rng: jax.Array,
+    cfg: PreprocessConfig,
+) -> tuple[PreprocessBatch, jax.Array]:
+    if state.log_trajectory.x.ndim < 3:
+        raise ValueError("Expected batched SimulatorState with shape [..., N, T].")
+
+    # pmap-style path: preserve the leading device axis and preprocess each
+    # device-local batch independently to avoid cross-device reshapes.
+    if state.log_trajectory.x.ndim > 3:
+        n_devices = state.log_trajectory.x.shape[0]
+        keys = jax.random.split(rng, n_devices)
+        return jax.vmap(lambda s, k: preprocess_simulator_state(s, k, cfg))(state, keys)
+
+    return _preprocess_single_batch(state, rng, cfg)

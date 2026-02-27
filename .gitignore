@@ -23,3 +23,6 @@ benchmarks/
 
 #dot folders
 .*/
+
+# checkpoints
+*/checkpoints/

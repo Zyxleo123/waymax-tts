@@ -9,10 +9,14 @@ class TrainConfig:
     seed: int = 0
     tfrecord_path: str = ""
     max_num_objects: int = 32
-    # Per-device batch size when data_parallel is enabled; global batch otherwise.
+    # Global batch size.
     batch_size: int = 4096
     shuffle_seed: int | None = 0
-    shuffle_buffer_size: int = 1024
+    shuffle_buffer_size: int = 8
+    tf_data_service_address: str | None = None
+    dataset_num_shards: int = 1
+    dataset_max_num_rg_points: int = 30000
+    dataset_include_sdc_paths: bool = False
 
     epochs: int = 100
     steps_per_epoch: int = 1000
@@ -24,6 +28,7 @@ class TrainConfig:
     weight_decay: float = 1e-4
     warmup_steps: int = 2000
     grad_clip_norm: float = 0.5
+    ema_update_every: int = 4
 
     hidden_dim: int = 256
     cond_dim: int = 256
@@ -43,19 +48,15 @@ class TrainConfig:
     num_map_type_classes: int = 21
 
     log_every: int = 100
+    pbar_every: int = 10
+    prefetch_size: int = 0
     log_jsonl_path: str = "./train_logs.jsonl"
     wandb_project: str = "reward_search"
     wandb_name: str = "diffusion_jax"
     wandb_entity: str | None = None
     wandb_mode: str = "online"
     data_parallel: bool = False
-    data_parallel_fallback: bool = True
-
-    transfer_profile_steps: int = 0
-    transfer_profile_max_d2h_events: int = 0
-    transfer_profile_dir: str = "./transfer_profiles"
-
-
+    jax_compilation_cache_dir: str = "./.jax_compilation_cache"
 
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser()
@@ -65,7 +66,11 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--max_num_objects", type=int, default=32)
     parser.add_argument("--batch_size", type=int, default=4096)
     parser.add_argument("--shuffle_seed", type=int, default=0)
-    parser.add_argument("--shuffle_buffer_size", type=int, default=1024)
+    parser.add_argument("--shuffle_buffer_size", type=int, default=8)
+    parser.add_argument("--tf_data_service_address", type=str, default=None)
+    parser.add_argument("--dataset_num_shards", type=int, default=1)
+    parser.add_argument("--dataset_max_num_rg_points", type=int, default=30000)
+    parser.add_argument("--dataset_include_sdc_paths", action="store_true")
 
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--steps_per_epoch", type=int, default=1000)
@@ -77,6 +82,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--warmup_steps", type=int, default=2000)
     parser.add_argument("--grad_clip_norm", type=float, default=0.5)
+    parser.add_argument("--ema_update_every", type=int, default=4)
 
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--cond_dim", type=int, default=256)
@@ -96,23 +102,17 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--num_map_type_classes", type=int, default=21)
 
     parser.add_argument("--log_every", type=int, default=100)
+    parser.add_argument("--pbar_every", type=int, default=10)
+    parser.add_argument("--prefetch_size", type=int, default=0)
     parser.add_argument("--log_jsonl_path", type=str, default="./train_logs.jsonl")
     parser.add_argument("--wandb_project", type=str, default="reward_search")
     parser.add_argument("--wandb_name", type=str, default="diffusion_jax")
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--data_parallel", action="store_true")
-    parser.add_argument("--no_data_parallel_fallback", action="store_true")
-    parser.add_argument("--transfer_profile_steps", type=int, default=0)
-    parser.add_argument("--transfer_profile_max_d2h_events", type=int, default=0)
-    parser.add_argument("--transfer_profile_dir", type=str, default="./transfer_profiles")
+    parser.add_argument("--jax_compilation_cache_dir", type=str, default="./.jax_compilation_cache")
 
-    args = parser.parse_args()
-    values = vars(args)
-    no_fallback = values.pop("no_data_parallel_fallback")
-    cfg = TrainConfig(**values)
-    cfg.data_parallel_fallback = not no_fallback
-    return cfg
+    return TrainConfig(**vars(parser.parse_args()))
 
 
 def config_to_dict(config: TrainConfig) -> dict:
