@@ -51,11 +51,43 @@ def make_train_step(
     state_in_axes=None,
 ):
     use_data_parallel = bool(data_parallel and mesh is not None)
+    ego_range = jnp.asarray(preprocess_cfg.ego_range, dtype=jnp.float32)
+    max_velocity = jnp.asarray(preprocess_cfg.max_velocity, dtype=jnp.float32)
+
+    def _wrap_to_pi(angle):
+        return (angle + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
+
+    def _trajectory_metrics(pred_btd, target_btd):
+        pred_xy = pred_btd[..., :2]
+        target_xy = target_btd[..., :2]
+        xy_err_m = jnp.linalg.norm(pred_xy - target_xy, axis=-1) * ego_range
+
+        metrics = {
+            "traj_ade_m": jnp.mean(xy_err_m),
+            "traj_fde_m": jnp.mean(xy_err_m[:, -1]),
+            "traj_final_longitudinal_err_m": jnp.mean(jnp.abs(pred_btd[:, -1, 0] - target_btd[:, -1, 0]) * ego_range),
+            "traj_final_lateral_err_m": jnp.mean(jnp.abs(pred_btd[:, -1, 1] - target_btd[:, -1, 1]) * ego_range),
+        }
+
+        if target_btd.shape[-1] >= 4:
+            pred_speed = jnp.linalg.norm(pred_btd[..., 2:4], axis=-1) * max_velocity
+            target_speed = jnp.linalg.norm(target_btd[..., 2:4], axis=-1) * max_velocity
+            metrics["speed_mae_mps"] = jnp.mean(jnp.abs(pred_speed - target_speed))
+        else:
+            metrics["speed_mae_mps"] = jnp.asarray(0.0, dtype=jnp.float32)
+
+        if target_btd.shape[-1] >= 5:
+            yaw_err = _wrap_to_pi((pred_btd[..., 4] - target_btd[..., 4]) * jnp.pi)
+            metrics["yaw_mae_deg"] = jnp.mean(jnp.abs(yaw_err)) * (180.0 / jnp.pi)
+        else:
+            metrics["yaw_mae_deg"] = jnp.asarray(0.0, dtype=jnp.float32)
+
+        return metrics
 
     def merge_model(p):
         return nnx.merge(graphdef, p, nonparam_state)
 
-    def single_device_loss(p, sim_state, key_pre, key_loss):
+    def single_device_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample):
         m = merge_model(p)
         pre_batch, _ = preprocess_simulator_state(sim_state, key_pre, preprocess_cfg)
         # Use non-jitted impls so the loss stays connected to the merged params tree.
@@ -63,47 +95,53 @@ def make_train_step(
         cond = m._condition_impl(m._as_features(feats))
         target = feats["ego_trajectory"][:, : m.predict_horizon, :]
         target_bct = jnp.transpose(target, (0, 2, 1))
-        return m.diffusion._loss_impl(target_bct, cond, key_loss)
+        loss = m.diffusion._loss_impl(target_bct, cond, key_loss)
+        pred = m._sample_from_condition_impl(cond, key_sample)
+        return loss, _trajectory_metrics(pred, target)
 
     if use_data_parallel:
         num_devices = mesh.devices.size
 
-        def local_loss_with_params(p, state_local, key_pre_local, key_loss_local):
+        def local_loss_with_params(p, state_local, key_pre_local, key_loss_local, key_sample_local):
             m = merge_model(p)
             pre_local, _ = preprocess_simulator_state(state_local, key_pre_local, preprocess_cfg)
             feats_local = pre_local.features
             cond_local = m._condition_impl(m._as_features(feats_local))
             target_local = feats_local["ego_trajectory"][:, : m.predict_horizon, :]
             target_local_bct = jnp.transpose(target_local, (0, 2, 1))
-            return m.diffusion._loss_impl(target_local_bct, cond_local, key_loss_local)
+            loss_local = m.diffusion._loss_impl(target_local_bct, cond_local, key_loss_local)
+            pred_local = m._sample_from_condition_impl(cond_local, key_sample_local)
+            return loss_local, _trajectory_metrics(pred_local, target_local)
 
         pmapped_local_loss = jax.pmap(
             local_loss_with_params,
             axis_name="data",
-            in_axes=(None, state_in_axes, 0, 0),
-            out_axes=0,
+            in_axes=(None, state_in_axes, 0, 0, 0),
+            out_axes=(0, 0),
         )
 
-        def compute_loss(p, sim_state, key_pre, key_loss):
+        def compute_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample):
             key_pre_devices = jax.random.split(key_pre, num_devices)
             key_loss_devices = jax.random.split(key_loss, num_devices)
+            key_sample_devices = jax.random.split(key_sample, num_devices)
             key_pre_devices = jax.lax.with_sharding_constraint(key_pre_devices, P("data", None))
             key_loss_devices = jax.lax.with_sharding_constraint(key_loss_devices, P("data", None))
-            losses = pmapped_local_loss(p, sim_state, key_pre_devices, key_loss_devices)
-            return jnp.mean(losses)
+            key_sample_devices = jax.lax.with_sharding_constraint(key_sample_devices, P("data", None))
+            losses, metric_tree = pmapped_local_loss(p, sim_state, key_pre_devices, key_loss_devices, key_sample_devices)
+            return jnp.mean(losses), jax.tree_util.tree_map(jnp.mean, metric_tree)
 
     else:
 
-        def compute_loss(p, sim_state, key_pre, key_loss):
-            return single_device_loss(p, sim_state, key_pre, key_loss)
+        def compute_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample):
+            return single_device_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample)
 
     def train_step_impl(params_state, opt_state, ema_params, rng_key, global_step, sim_state):
-        rng_key, key_pre, key_loss = jax.random.split(rng_key, 3)
+        rng_key, key_pre, key_loss, key_sample = jax.random.split(rng_key, 4)
 
         def loss_fn(p):
-            return compute_loss(p, sim_state, key_pre, key_loss)
+            return compute_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample)
 
-        loss, grads = jax.value_and_grad(loss_fn)(params_state)
+        (loss, train_metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params_state)
         clipped_grads, grad_norm = clip_grads(grads, grad_clip_norm)
         updates, opt_state_next = tx.update(clipped_grads, opt_state, params_state)
         params_next = optax.apply_updates(params_state, updates)
@@ -123,8 +161,7 @@ def make_train_step(
         metrics = {
             "loss": loss,
             "grad_norm": grad_norm,
-            "ego_traj_max": jnp.array(0.0, dtype=jnp.float32),
-            "ego_traj_min": jnp.array(0.0, dtype=jnp.float32),
+            **train_metrics,
         }
         return params_next, opt_state_next, ema_params_next, rng_key, global_step + jnp.int32(1), metrics
 

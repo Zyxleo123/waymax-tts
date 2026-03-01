@@ -272,8 +272,6 @@ def init_wandb_run(args, config_dict):
 def wandb_log_train_step(step: int, epoch: int, metrics, ema_loss, lr: float):
     loss_val = float(metrics["loss"])
     grad_norm = float(metrics["grad_norm"])
-    ego_traj_max = float(metrics["ego_traj_max"])
-    ego_traj_min = float(metrics["ego_traj_min"])
 
     if ema_loss is None:
         ema_loss = loss_val
@@ -287,9 +285,12 @@ def wandb_log_train_step(step: int, epoch: int, metrics, ema_loss, lr: float):
         "train/loss_ema": ema_loss,
         "train/grad_norm": grad_norm,
         "train/lr": lr,
-        "data/ego_traj_max": ego_traj_max,
-        "data/ego_traj_min": ego_traj_min,
     }
+    for key, value in metrics.items():
+        if key in {"loss", "grad_norm"}:
+            continue
+        payload[f"train/{key}"] = float(value)
+
     wandb.log(payload, step=step)
     return ema_loss, payload
 
@@ -305,9 +306,11 @@ def update_tqdm(pbar, step: int, pbar_every: int, metrics, ema_loss):
         return ema_loss
     loss_val = float(metrics["loss"])
     grad_norm = float(metrics["grad_norm"])
+    ade_m = float(metrics.get("traj_ade_m", 0.0))
+    fde_m = float(metrics.get("traj_fde_m", 0.0))
     if ema_loss is None:
         ema_loss = loss_val
     else:
         ema_loss = 0.99 * ema_loss + 0.01 * loss_val
-    pbar.set_postfix({"loss": f"{ema_loss:.4f}", "gn": f"{grad_norm:.2f}"})
+    pbar.set_postfix({"loss": f"{ema_loss:.4f}", "gn": f"{grad_norm:.2f}", "ade": f"{ade_m:.2f}m", "fde": f"{fde_m:.2f}m"})
     return ema_loss

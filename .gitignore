@@ -36,3 +36,6 @@ wandb/
 
 # logs
 *.jsonl
+
+# videos
+videos/
