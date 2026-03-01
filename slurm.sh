@@ -17,14 +17,15 @@ conda activate es
 CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --tfrecord_path /data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/training/training_tfexample.tfrecord@1000 \
   --seed 42 \
-  --batch_size 2024 \
-  --shuffle_buffer_size 2024 \
+  --batch_size 4096 \
+  --shuffle_buffer_size 4096 \
   --dataset_num_shards 2 \
   --epochs 500 \
-  --steps_per_epoch 65 \
+  --steps_per_epoch 64 \
   --save_every 10 \
   --save_dir ./train/checkpoints \
-  --warmup_steps 2000 \
+  --warmup_steps 32 \
+  --lr 0.0001 \
   --ema_update_every 1 \
   --hidden_dim 256 \
   --cond_dim 256 \
