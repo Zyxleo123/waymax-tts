@@ -26,3 +26,13 @@ benchmarks/
 
 # checkpoints
 */checkpoints/
+
+# slurm
+*.err
+*.out
+
+# wandb
+wandb/
+
+# logs
+*.jsonl
