@@ -1,5 +1,4 @@
 #!/bin/bash
-#SBATCH --job-name=womd
 #SBATCH --partition=general
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -7,8 +6,6 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/womd_%j.out
-#SBATCH --error=logs/womd_%j.err
 
 source ~/.bashrc
 conda activate es
@@ -21,7 +18,7 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --seed 42 \
   --batch_size 2048 \
   --shuffle_buffer_size 2048 \
-  --dataset_num_shards 250 \
+  --dataset_num_shards 2 \
   --epochs 250 \
   --steps_per_epoch 100 \
   --save_every 50 \

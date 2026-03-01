@@ -27,4 +27,4 @@ sbatch \
   --output="logs/${RUN_NAME}_%j.out" \
   --error="logs/${RUN_NAME}_%j.err" \
   --export=ALL,LR="${LR}",WANDB_NAME="${RUN_NAME}" \
-  slurm.sh
+  babel_slurm.sh
