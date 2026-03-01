@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=32              # 128 CPU cores for this task
 #SBATCH --mem=256G                       # Total memory
 #SBATCH --time=24:00:00                 # Walltime (HH:MM:SS)
-#SBATCH --output=womd_%j.out        # Standard output
-#SBATCH --error=womd_%j.err         # Standard error
+#SBATCH --output=logs/womd_%j.out        # Standard output
+#SBATCH --error=logs/womd_%j.err         # Standard error
 # #SBATCH --account=eshau               # Uncomment & set if your cluster needs an account
 
 source ~/.bashrc
@@ -22,10 +22,10 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --dataset_num_shards 2 \
   --epochs 500 \
   --steps_per_epoch 50 \
-  --save_every 10 \
-  --save_dir ./train/checkpoints \
-  --warmup_steps 250 \
-  --lr 0.005 \
+  --save_every 100 \
+  --save_dir /data/user_data/eshau/checkpoints \
+  --warmup_steps 500 \
+  --lr 0.001 \
   --ema_update_every 1 \
   --hidden_dim 256 \
   --cond_dim 256 \
