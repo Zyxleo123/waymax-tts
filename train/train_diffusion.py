@@ -58,7 +58,12 @@ def make_train_step(
     def single_device_loss(p, sim_state, key_pre, key_loss):
         m = merge_model(p)
         pre_batch, _ = preprocess_simulator_state(sim_state, key_pre, preprocess_cfg)
-        return m.loss(pre_batch.features, rng=key_loss, data_parallel=False)
+        # Use non-jitted impls so the loss stays connected to the merged params tree.
+        feats = pre_batch.features
+        cond = m._condition_impl(m._as_features(feats))
+        target = feats["ego_trajectory"][:, : m.predict_horizon, :]
+        target_bct = jnp.transpose(target, (0, 2, 1))
+        return m.diffusion._loss_impl(target_bct, cond, key_loss)
 
     if use_data_parallel:
         num_devices = mesh.devices.size
@@ -69,7 +74,8 @@ def make_train_step(
             feats_local = pre_local.features
             cond_local = m._condition_impl(m._as_features(feats_local))
             target_local = feats_local["ego_trajectory"][:, : m.predict_horizon, :]
-            return m._loss_from_condition_impl(target_local, cond_local, key_loss_local)
+            target_local_bct = jnp.transpose(target_local, (0, 2, 1))
+            return m.diffusion._loss_impl(target_local_bct, cond_local, key_loss_local)
 
         pmapped_local_loss = jax.pmap(
             local_loss_with_params,
