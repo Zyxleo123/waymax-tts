@@ -24,7 +24,7 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --steps_per_epoch 64 \
   --save_every 10 \
   --save_dir ./train/checkpoints \
-  --warmup_steps 32 \
+  --warmup_steps 960 \
   --lr 0.0001 \
   --ema_update_every 1 \
   --hidden_dim 256 \
