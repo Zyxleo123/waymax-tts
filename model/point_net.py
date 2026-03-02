@@ -34,7 +34,7 @@ class PointNet(nnx.Module):
             use_batchnorm=use_batchnorm,
         )
 
-        self.mlp_layers = [
+        self.mlp_layers = nnx.Sequential(*[
             MLP(
                 [hidden_dim, hidden_dim // 2],
                 rngs=rngs,
@@ -43,7 +43,7 @@ class PointNet(nnx.Module):
                 use_batchnorm=use_batchnorm,
             )
             for _ in range(n_layer - 1)
-        ]
+        ])
 
         self.mlp_out = MLP(
             [hidden_dim, hidden_dim],
@@ -73,7 +73,7 @@ class PointNet(nnx.Module):
 
         h = self.input_mlp(x, deterministic=deterministic)
 
-        for mlp in self.mlp_layers:
+        for mlp in self.mlp_layers.layers:
             feature_encoded = mlp(h, deterministic=deterministic)
             feature_pooled = jnp.where(valid[..., None], feature_encoded, neg_inf).max(axis=1, keepdims=True)
             feature_pooled = jnp.where(has_any[:, None, None], feature_pooled, jnp.zeros_like(feature_pooled))

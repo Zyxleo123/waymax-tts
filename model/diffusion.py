@@ -137,6 +137,12 @@ class UNet1DConditioned(nnx.Module):
                 self.up_blocks.append(ResBlock1d(ch + self.skip_channels[i], out_ch, base_ch, base_ch, rngs=rngs, groups=groups))
                 ch = out_ch
             self.upsamples.append(Upsample1d(ch, rngs=rngs) if i != 0 else Identity1d())
+        
+        # NOTE: Wrap python lists of modules in nnx submodules so their params are correctly tracked.
+        self.down_blocks = nnx.Sequential(*self.down_blocks)
+        self.downsamples = nnx.Sequential(*self.downsamples)
+        self.up_blocks = nnx.Sequential(*self.up_blocks)
+        self.upsamples = nnx.Sequential(*self.upsamples)
 
         self.out_norm = nnx.GroupNorm(num_features=ch, num_groups=min(groups, ch), epsilon=1e-5, rngs=rngs)
         self.out_conv = nnx.Conv(in_features=ch, out_features=in_ch, kernel_size=(3,), padding="SAME", rngs=rngs)
@@ -158,10 +164,10 @@ class UNet1DConditioned(nnx.Module):
         rb = 0
         for i in range(self.n_down):
             for _ in range(self.num_res_blocks):
-                h = self.down_blocks[rb](h, cond_feat, time_feat)
+                h = self.down_blocks.layers[rb](h, cond_feat, time_feat)
                 rb += 1
             skips.append(h)
-            h = self.downsamples[i](h)
+            h = self.downsamples.layers[i](h)
 
         h = self.mid_block1(h, cond_feat, time_feat)
         h = self.mid_block2(h, cond_feat, time_feat)
@@ -176,10 +182,10 @@ class UNet1DConditioned(nnx.Module):
 
             for _ in range(self.num_res_blocks):
                 h = jnp.concatenate([h, skip], axis=-1)
-                h = self.up_blocks[rb_up](h, cond_feat, time_feat)
+                h = self.up_blocks.layers[rb_up](h, cond_feat, time_feat)
                 rb_up += 1
 
-            h = self.upsamples[i](h)
+            h = self.upsamples.layers[i](h)
 
         h = self.out_norm(h)
         h = nnx.silu(h)
