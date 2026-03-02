@@ -69,12 +69,10 @@ class DiffusionPolicy(nnx.Module):
         self.target_dim = target_dim
         self.predict_horizon = predict_horizon
 
-        self.input_projections = {
-            "ego": MLP([ego_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs),
-            "other": PointNet(other_dim, hidden_dim, rngs=rngs),
-            "map": PointNet(map_attr_dim, hidden_dim, rngs=rngs),
-            "tl": PointNet(tl_attr_dim, hidden_dim, rngs=rngs),
-        }
+        self.input_proj_ego = MLP([ego_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
+        self.input_proj_other = PointNet(other_dim, hidden_dim, rngs=rngs)
+        self.input_proj_map = PointNet(map_attr_dim, hidden_dim, rngs=rngs)
+        self.input_proj_tl = PointNet(tl_attr_dim, hidden_dim, rngs=rngs)
         self.cond_projection = MLP([hidden_dim * 4, hidden_dim, cond_dim], rngs=rngs)
 
         denoise_fn = UNet1DConditioned(
@@ -123,18 +121,18 @@ class DiffusionPolicy(nnx.Module):
         return jax.device_put(traj, self._traj_sharding)
 
     def _condition_impl(self, features: PolicyFeatures) -> jnp.ndarray:
-        ego_feature = self.input_projections["ego"](features.ego_state, deterministic=True)
-        other_feature = self.input_projections["other"](
+        ego_feature = self.input_proj_ego(features.ego_state, deterministic=True)
+        other_feature = self.input_proj_other(
             features.other_states,
             features.other_valid,
             deterministic=True,
         )
-        map_features = self.input_projections["map"](
+        map_features = self.input_proj_map(
             features.map_features,
             features.map_valid,
             deterministic=True,
         )
-        traffic_light_features = self.input_projections["tl"](
+        traffic_light_features = self.input_proj_tl(
             features.traffic_light_features,
             features.traffic_light_valid,
             deterministic=True,
