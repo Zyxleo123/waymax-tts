@@ -255,6 +255,7 @@ def _preprocess_single_batch(
     state: datatypes.SimulatorState,
     rng: jax.Array,
     cfg: PreprocessConfig,
+    anchor_step_override_b: jax.Array | None = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     bsz = state.log_trajectory.x.shape[0]
     ego_idx = extract_ego_index(state)
@@ -263,8 +264,17 @@ def _preprocess_single_batch(
     total_horizon_s = cfg.predict_horizon * cfg.model_dt
     horizon_world_steps_b = jnp.ceil(total_horizon_s / jnp.maximum(world_dt_b, 1e-3)).astype(jnp.int32)
 
-    rng, rng_anchor = jax.random.split(rng)
-    anchor_step_b, _ = sample_anchor_step(state, rng_anchor, horizon_world_steps_b)
+    if anchor_step_override_b is None:
+        rng, rng_anchor = jax.random.split(rng)
+        anchor_step_b, _ = sample_anchor_step(state, rng_anchor, horizon_world_steps_b)
+    else:
+        anchor_step_b = jnp.asarray(anchor_step_override_b, dtype=jnp.int32)
+        if anchor_step_b.ndim != 1 or anchor_step_b.shape[0] != bsz:
+            raise ValueError(
+                f"anchor_step_override_b must be shape [B]={bsz}, got {anchor_step_b.shape}."
+            )
+        max_step = jnp.int32(state.log_trajectory.shape[-1] - 1)
+        anchor_step_b = jnp.clip(anchor_step_b, 0, max_step)
 
     x_bt = _gather_ego(state.log_trajectory.x, ego_idx)
     y_bt = _gather_ego(state.log_trajectory.y, ego_idx)
@@ -344,6 +354,7 @@ def preprocess_simulator_state(
     state: datatypes.SimulatorState,
     rng: jax.Array,
     cfg: PreprocessConfig,
+    anchor_step_override_b: jax.Array | None = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     if state.log_trajectory.x.ndim < 3:
         raise ValueError("Expected batched SimulatorState with shape [..., N, T].")
@@ -353,6 +364,14 @@ def preprocess_simulator_state(
     if state.log_trajectory.x.ndim > 3:
         n_devices = state.log_trajectory.x.shape[0]
         keys = jax.random.split(rng, n_devices)
+        if anchor_step_override_b is not None:
+            return jax.vmap(
+                lambda s, k, a: preprocess_simulator_state(
+                    s, k, cfg, anchor_step_override_b=a
+                )
+            )(state, keys, anchor_step_override_b)
         return jax.vmap(lambda s, k: preprocess_simulator_state(s, k, cfg))(state, keys)
 
-    return _preprocess_single_batch(state, rng, cfg)
+    return _preprocess_single_batch(
+        state, rng, cfg, anchor_step_override_b=anchor_step_override_b
+    )

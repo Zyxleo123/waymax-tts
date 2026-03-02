@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from train.infer import (  # noqa: E402
     load_model_for_inference,
     predict_replacement_trajectories_for_batch,
+    predict_replacement_trajectories_with_periodic_replan,
     rollout_predicted_trajectories_with_metrics,
 )
 from viz.render import _load_scenario_state_batch_fast, render_videos_batched  # noqa: E402
@@ -39,9 +40,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario_indices", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--use_ema", action="store_true")
+    parser.add_argument("--skip_checkpoint_load", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max_num_objects", type=int, default=32)
     parser.add_argument("--num_samples", type=int, default=4)
+    parser.add_argument("--replan_interval_steps", type=int, default=10)
     parser.add_argument("--render_sample_indices", type=str, default="0")
     parser.add_argument("--rollout_sample_indices", type=str, default=None)
     parser.add_argument("--rollout_num_steps", type=int, default=None)
@@ -120,6 +123,7 @@ def main() -> None:
         use_ema=bool(args.use_ema),
         metadata_path=args.metadata_path,
         seed=int(args.seed),
+        skip_checkpoint_load=bool(args.skip_checkpoint_load),
     )
 
     from waymax import config as waymax_config
@@ -135,12 +139,21 @@ def main() -> None:
     ordered_batch_indices = [scenario_to_batch_idx[idx] for idx in scenario_indices]
 
     rng_key = jax.random.PRNGKey(int(args.seed))
-    pred = predict_replacement_trajectories_for_batch(
-        sim_state,
-        inference,
-        rng_key=rng_key,
-        num_samples=int(args.num_samples),
-    )
+    if int(args.replan_interval_steps) > 0:
+        pred = predict_replacement_trajectories_with_periodic_replan(
+            sim_state,
+            inference,
+            rng_key=rng_key,
+            num_samples=int(args.num_samples),
+            replan_interval_steps=int(args.replan_interval_steps),
+        )
+    else:
+        pred = predict_replacement_trajectories_for_batch(
+            sim_state,
+            inference,
+            rng_key=rng_key,
+            num_samples=int(args.num_samples),
+        )
 
     pred_traj = np.asarray(pred.trajectories_world_bkt5)
     start_t = np.asarray(pred.start_t_b, dtype=np.int32)
@@ -240,6 +253,7 @@ def main() -> None:
         "render_sample_indices": [int(x) for x in render_sample_indices],
         "rollout_sample_indices": [int(x) for x in rollout_sample_indices],
         "num_samples_generated": int(pred_traj.shape[1]),
+        "replan_interval_steps": int(args.replan_interval_steps),
         "predict_horizon_world_steps": int(pred_traj.shape[2]),
         "start_t_by_scenario": {
             str(int(scenario_indices[i])): int(start_t[ordered_batch_indices[i]])

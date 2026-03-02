@@ -305,6 +305,7 @@ def load_model_for_inference(
     use_ema: bool = True,
     metadata_path: str | None = None,
     seed: int = 0,
+    skip_checkpoint_load: bool = False,
 ) -> InferenceBundle:
     metadata = _load_checkpoint_metadata(checkpoint_path, metadata_path)
     preprocess_cfg = _build_preprocess_cfg(metadata)
@@ -313,14 +314,16 @@ def load_model_for_inference(
     graphdef, template_params_state, template_nonparam_state = nnx.split(
         model, nnx.Param, ...
     )
-    del template_params_state
+    params_state = template_params_state
+    nonparam_state = template_nonparam_state
 
-    restored = restore_checkpoint(checkpoint_path)
-    if "params_state" not in restored or "ema_params" not in restored:
-        raise KeyError("Checkpoint is missing 'params_state' or 'ema_params'.")
+    if not skip_checkpoint_load:
+        restored = restore_checkpoint(checkpoint_path)
+        if "params_state" not in restored or "ema_params" not in restored:
+            raise KeyError("Checkpoint is missing 'params_state' or 'ema_params'.")
 
-    params_state = restored["ema_params"] if use_ema else restored["params_state"]
-    nonparam_state = restored.get("nonparam_state", template_nonparam_state)
+        params_state = restored["ema_params"] if use_ema else restored["params_state"]
+        nonparam_state = restored.get("nonparam_state", template_nonparam_state)
 
     model_cfg = {
         "target_dim": int(metadata["target_dim"]),
@@ -345,6 +348,7 @@ def predict_replacement_trajectories_for_batch(
     *,
     rng_key: jax.Array | None = None,
     num_samples: int = 4,
+    anchor_step_override_b: jax.Array | np.ndarray | None = None,
 ) -> PredictionBatch:
     if int(num_samples) < 1:
         raise ValueError(f"num_samples must be >= 1, got {num_samples}.")
@@ -354,8 +358,14 @@ def predict_replacement_trajectories_for_batch(
         )
 
     key = inference.rng_key if rng_key is None else rng_key
+    anchor_override = None
+    if anchor_step_override_b is not None:
+        anchor_override = jnp.asarray(anchor_step_override_b, dtype=jnp.int32)
     pre_batch, next_key = preprocess_simulator_state(
-        sim_state, key, inference.preprocess_cfg
+        sim_state,
+        key,
+        inference.preprocess_cfg,
+        anchor_step_override_b=anchor_override,
     )
 
     model = nnx.merge(
@@ -385,6 +395,104 @@ def predict_replacement_trajectories_for_batch(
         world_t_seconds_bk=pre_batch.aux["world_t_seconds"],
         world_t_valid_bk=pre_batch.aux["world_t_valid"],
         aux=pre_batch.aux,
+    )
+
+
+def predict_replacement_trajectories_with_periodic_replan(
+    sim_state,
+    inference: InferenceBundle,
+    *,
+    rng_key: jax.Array | None = None,
+    num_samples: int = 4,
+    replan_interval_steps: int = 10,
+) -> PredictionBatch:
+    if int(replan_interval_steps) <= 0:
+        return predict_replacement_trajectories_for_batch(
+            sim_state,
+            inference,
+            rng_key=rng_key,
+            num_samples=num_samples,
+        )
+
+    total_k = int(num_samples)
+    if total_k < 1:
+        raise ValueError(f"num_samples must be >= 1, got {num_samples}.")
+
+    key = inference.rng_key if rng_key is None else rng_key
+    expanded_state, batch_size = _expand_sim_state_for_samples(sim_state, total_k)
+    initial_anchor_bk = np.zeros((batch_size * total_k,), dtype=np.int32)
+
+    initial = predict_replacement_trajectories_for_batch(
+        expanded_state,
+        inference,
+        rng_key=key,
+        num_samples=1,
+        anchor_step_override_b=initial_anchor_bk,
+    )
+
+    start_t_bk = np.asarray(initial.start_t_b, dtype=np.int32)
+    if not np.all(start_t_bk == 0):
+        raise ValueError(
+            f"Expected initial anchor_step to be all zeros, got min={int(start_t_bk.min())}, max={int(start_t_bk.max())}."
+        )
+
+    episode_num_steps = int(sim_state.log_trajectory.x.shape[-1])
+    traj_bk1l5 = np.asarray(initial.trajectories_world_bkt5)
+    if traj_bk1l5.ndim != 4 or traj_bk1l5.shape[1] != 1 or traj_bk1l5.shape[-1] != 5:
+        raise ValueError(
+            f"Expected initial trajectories shape [BK,1,L,5], got {traj_bk1l5.shape}."
+        )
+    initial_traj_bkl5 = np.array(traj_bk1l5[:, 0, :, :], dtype=np.float32, copy=True)
+    model_horizon_len = int(initial_traj_bkl5.shape[1])
+
+    traj_bkl5 = np.zeros((batch_size * total_k, episode_num_steps, 5), dtype=np.float32)
+    init_copy_len = min(episode_num_steps, model_horizon_len)
+    traj_bkl5[:, :init_copy_len, :] = initial_traj_bkl5[:, :init_copy_len, :]
+
+    max_steps = episode_num_steps - 1
+    interval = int(replan_interval_steps)
+    for step_offset in range(interval, max_steps + 1, interval):
+        replaced_state = _apply_ego_replacements_to_expanded_state(
+            expanded_state,
+            start_t_bk=start_t_bk,
+            traj_bkl5=traj_bkl5,
+        )
+
+        forced_anchor_bk = start_t_bk + int(step_offset)
+        repl = predict_replacement_trajectories_for_batch(
+            replaced_state,
+            inference,
+            rng_key=key,
+            num_samples=1,
+            anchor_step_override_b=forced_anchor_bk,
+        )
+
+        repl_bk1l5 = np.asarray(repl.trajectories_world_bkt5)
+        repl_bkl5 = np.asarray(repl_bk1l5[:, 0, :, :], dtype=np.float32)
+
+        remaining = episode_num_steps - int(step_offset)
+        if remaining <= 0:
+            continue
+        copy_len = min(remaining, int(repl_bkl5.shape[1]))
+        traj_bkl5[:, step_offset : step_offset + copy_len, :] = repl_bkl5[:, :copy_len, :]
+
+    traj_bktl5 = traj_bkl5.reshape(batch_size, total_k, episode_num_steps, 5)
+    start_t_b = start_t_bk.reshape(batch_size, total_k)[:, 0]
+
+    world_dt_b = np.asarray(initial.aux["world_dt_seconds"], dtype=np.float32).reshape(
+        batch_size, total_k
+    )[:, 0]
+    world_t = (
+        np.arange(episode_num_steps, dtype=np.float32)[None, :] * world_dt_b[:, None]
+    )
+    world_valid = np.ones((batch_size, episode_num_steps), dtype=bool)
+
+    return PredictionBatch(
+        start_t_b=jnp.asarray(start_t_b, dtype=jnp.int32),
+        trajectories_world_bkt5=jnp.asarray(traj_bktl5, dtype=jnp.float32),
+        world_t_seconds_bk=jnp.asarray(world_t, dtype=jnp.float32),
+        world_t_valid_bk=jnp.asarray(world_valid),
+        aux=initial.aux,
     )
 
 
@@ -543,11 +651,13 @@ def _parse_args():
     parser.add_argument("--metadata_path", type=str, default=None)
     parser.add_argument("--use_ema", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--skip_checkpoint_load", action="store_true")
     parser.add_argument("--tfrecord_path", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_num_objects", type=int, default=32)
     parser.add_argument("--shuffle_seed", type=int, default=0)
     parser.add_argument("--num_samples", type=int, default=4)
+    parser.add_argument("--replan_interval_steps", type=int, default=10)
     parser.add_argument("--do_rollout", action="store_true")
     parser.add_argument("--rollout_num_steps", type=int, default=None)
     parser.add_argument(
@@ -565,6 +675,7 @@ def main():
         use_ema=bool(args.use_ema),
         metadata_path=args.metadata_path,
         seed=int(args.seed),
+        skip_checkpoint_load=bool(args.skip_checkpoint_load),
     )
 
     from waymax import config as waymax_config
@@ -580,8 +691,11 @@ def main():
     scenarios = dataloader.simulator_state_generator(ds_cfg)
     sim_state = next(scenarios)
 
-    pred = predict_replacement_trajectories_for_batch(
-        sim_state, inference, num_samples=int(args.num_samples)
+    pred = predict_replacement_trajectories_with_periodic_replan(
+        sim_state,
+        inference,
+        num_samples=int(args.num_samples),
+        replan_interval_steps=int(args.replan_interval_steps),
     )
     starts, trajs = to_replacement_lists(pred, sample_index=0, trim_anchor=False)
 

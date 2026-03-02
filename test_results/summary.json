@@ -1,0 +1,139 @@
+{
+  "checkpoint_path": "/data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0030/",
+  "metadata_path": null,
+  "metric_names": [
+    "overlap",
+    "offroad",
+    "sdc_progression"
+  ],
+  "metric_summary": {
+    "offroad": {
+      "per_scenario_sample": [
+        [
+          {
+            "final": 0.0,
+            "max": 1.0,
+            "mean": 0.16483516991138458,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 0.0,
+            "max": 1.0,
+            "mean": 0.18681319057941437,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "valid_steps": 91
+          }
+        ]
+      ]
+    },
+    "overlap": {
+      "per_scenario_sample": [
+        [
+          {
+            "final": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "valid_steps": 91
+          }
+        ]
+      ]
+    },
+    "sdc_progression": {
+      "per_scenario_sample": [
+        [
+          {
+            "final": 1.0,
+            "max": 1.1887288093566895,
+            "mean": 0.2746753394603729,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 1.0,
+            "max": 1.0,
+            "mean": 0.6004989743232727,
+            "valid_steps": 91
+          }
+        ],
+        [
+          {
+            "final": 1.0,
+            "max": 1.0,
+            "mean": 1.0,
+            "valid_steps": 91
+          }
+        ]
+      ]
+    }
+  },
+  "num_samples_generated": 4,
+  "original_videos": [],
+  "predict_horizon_world_steps": 91,
+  "predicted_videos": [
+    {
+      "batch_index": 0,
+      "path": "test_results/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_000.req_000.mp4",
+      "sample_index": 0,
+      "scenario_index": 0,
+      "start_t": 0
+    },
+    {
+      "batch_index": 1,
+      "path": "test_results/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_001.req_001.mp4",
+      "sample_index": 0,
+      "scenario_index": 1,
+      "start_t": 0
+    },
+    {
+      "batch_index": 2,
+      "path": "test_results/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_002.req_002.mp4",
+      "sample_index": 0,
+      "scenario_index": 2,
+      "start_t": 0
+    }
+  ],
+  "render_sample_indices": [
+    0
+  ],
+  "replan_interval_steps": 10,
+  "rollout_sample_indices": [
+    0
+  ],
+  "scenario_indices": [
+    0,
+    1,
+    2
+  ],
+  "start_t_by_scenario": {
+    "0": 0,
+    "1": 0,
+    "2": 0
+  },
+  "tfrecord_path": "/data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/training/training_tfexample.tfrecord-00100-of-01000"
+}
