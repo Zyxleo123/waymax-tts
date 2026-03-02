@@ -235,10 +235,6 @@ class GaussianDiffusion(nnx.Module):
         self.posterior_mean_coef1 = nnx.Variable(betas * jnp.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod))
         self.posterior_mean_coef2 = nnx.Variable((1.0 - alphas_cumprod_prev) * jnp.sqrt(alphas) / (1.0 - alphas_cumprod))
 
-        self._jit_loss = nnx.jit(self._loss_impl)
-        self._jit_sample = nnx.jit(self._sample_impl, static_argnums=(0,))
-        self._jit_resample = nnx.jit(self._resample_impl, static_argnums=(2,))
-
     @staticmethod
     def _extract(a: jnp.ndarray, t: jnp.ndarray, x_shape: Sequence[int]) -> jnp.ndarray:
         out = a[t]
@@ -344,7 +340,7 @@ class GaussianDiffusion(nnx.Module):
         *,
         rng: jax.Array,
     ) -> jnp.ndarray:
-        return self._jit_sample(shape, cond, rng)
+        return self._sample_impl(shape, cond, rng)
 
     def loss(
         self,
@@ -353,7 +349,7 @@ class GaussianDiffusion(nnx.Module):
         *,
         rng: jax.Array,
     ) -> jnp.ndarray:
-        return self._jit_loss(x0, cond, rng)
+        return self._loss_impl(x0, cond, rng)
 
     def resample(
         self,
@@ -365,4 +361,4 @@ class GaussianDiffusion(nnx.Module):
     ) -> jnp.ndarray:
         if n_timesteps <= 0 or n_timesteps > self.timesteps:
             raise ValueError(f"n_timesteps must be in [1, {self.timesteps}], got {n_timesteps}")
-        return self._jit_resample(proposals, cond, n_timesteps, rng)
+        return self._resample_impl(proposals, cond, n_timesteps, rng)

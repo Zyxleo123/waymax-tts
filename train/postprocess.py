@@ -14,6 +14,7 @@ def ego_normalized_to_world(
     max_distance: float,
     max_velocity: float,
 ) -> jax.Array:
+    # pred_btd uses [x, y, vx, vy, yaw] in ego-normalized coordinates.
     pos = pred_btd[:, :, :2] * max_distance
     vel = pred_btd[:, :, 2:4] * max_velocity
     yaw = pred_btd[:, :, 4] * jnp.pi
@@ -22,7 +23,8 @@ def ego_normalized_to_world(
     vel_world = _rotate_xy(vel, -anchor_yaw[:, None])
     yaw_world = _wrap_to_pi(yaw + anchor_yaw[:, None])
 
-    return jnp.concatenate([pos_world, vel_world, yaw_world[:, :, None]], axis=-1).astype(jnp.float32)
+    # World trajectory consumers expect [x, y, yaw, vel_x, vel_y].
+    return jnp.concatenate([pos_world, yaw_world[:, :, None], vel_world], axis=-1).astype(jnp.float32)
 
 
 def resample_to_world_dt(
@@ -34,7 +36,7 @@ def resample_to_world_dt(
         traj_btd=pred_world_btd,
         src_t_s=model_t_s,
         dst_t_s=world_t_s,
-        yaw_index=4,
+        yaw_index=2,
     )
 
 
@@ -51,7 +53,8 @@ def postprocess_predictions(
         max_velocity=cfg.max_velocity,
     )
 
-    anchor_world = aux["anchor_world_state"][:, None, :]
+    # anchor_world_state is [x, y, vx, vy, yaw] from preprocessing; reorder to world layout.
+    anchor_world = aux["anchor_world_state"][:, [0, 1, 4, 2, 3]][:, None, :]
     pred_world_with_anchor = jnp.concatenate([anchor_world, pred_world_model_dt], axis=1)
 
     model_t_s = aux["model_t_seconds"]

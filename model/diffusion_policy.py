@@ -90,37 +90,18 @@ class DiffusionPolicy(nnx.Module):
             predict_type=predict_type,
         )
 
-        self._jit_condition = nnx.jit(self._condition_impl)
-        self._jit_sample_from_condition = nnx.jit(self._sample_from_condition_impl)
-        self._jit_loss_from_condition = nnx.jit(self._loss_from_condition_impl)
-        self._jit_resample_from_condition = nnx.jit(self._resample_from_condition_impl, static_argnums=(2,))
-
         self._mesh: Optional[Mesh] = None
         self._cond_sharding: Optional[NamedSharding] = None
         self._traj_sharding: Optional[NamedSharding] = None
-        self._replicated_sharding: Optional[NamedSharding] = None
-        self._jit_sample_from_condition_sharded = None
-        self._jit_loss_from_condition_sharded = None
-        self._init_data_parallel_jits()
+        self._init_data_parallel_sharding()
 
-    def _init_data_parallel_jits(self) -> None:
+    def _init_data_parallel_sharding(self) -> None:
         gpu_devices = [d for d in jax.devices() if d.platform == "gpu"]
         if len(gpu_devices) <= 1:
             return
         self._mesh = Mesh(np.asarray(gpu_devices), ("data",))
         self._cond_sharding = NamedSharding(self._mesh, P("data", None))
         self._traj_sharding = NamedSharding(self._mesh, P("data", None, None))
-        self._replicated_sharding = NamedSharding(self._mesh, P())
-        self._jit_sample_from_condition_sharded = jax.jit(
-            self._sample_from_condition_impl,
-            in_shardings=(self._cond_sharding, self._replicated_sharding),
-            out_shardings=self._traj_sharding,
-        )
-        self._jit_loss_from_condition_sharded = jax.jit(
-            self._loss_from_condition_impl,
-            in_shardings=(self._traj_sharding, self._cond_sharding, self._replicated_sharding),
-            out_shardings=self._replicated_sharding,
-        )
 
     @staticmethod
     def _as_features(features: PolicyFeatures | Mapping[str, jnp.ndarray]) -> PolicyFeatures:
@@ -180,15 +161,14 @@ class DiffusionPolicy(nnx.Module):
         return jnp.transpose(x, (0, 2, 1))
 
     def compute_condition(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray]) -> jnp.ndarray:
-        return self._jit_condition(self._as_features(input_features))
+        return self._condition_impl(self._as_features(input_features))
 
     def input_features_projection(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray]) -> jnp.ndarray:
         return self.compute_condition(input_features)
 
     def sample_from_condition(self, cond: jnp.ndarray, *, rng: jax.Array, data_parallel: bool = False) -> jnp.ndarray:
-        if data_parallel and self._jit_sample_from_condition_sharded is not None:
-            return self._jit_sample_from_condition_sharded(self.shard_condition(cond), rng)
-        return self._jit_sample_from_condition(cond, rng)
+        cond_in = self.shard_condition(cond) if data_parallel else cond
+        return self._sample_from_condition_impl(cond_in, rng)
 
     def loss_from_condition(
         self,
@@ -199,11 +179,11 @@ class DiffusionPolicy(nnx.Module):
         data_parallel: bool = False,
         pre_sharded: bool = False,
     ) -> jnp.ndarray:
-        if data_parallel and self._jit_loss_from_condition_sharded is not None:
+        if data_parallel:
             traj = target_btd if pre_sharded else self.shard_trajectory(target_btd)
             cond_in = cond if pre_sharded else self.shard_condition(cond)
-            return self._jit_loss_from_condition_sharded(traj, cond_in, rng)
-        return self._jit_loss_from_condition(target_btd, cond, rng)
+            return self._loss_from_condition_impl(traj, cond_in, rng)
+        return self._loss_from_condition_impl(target_btd, cond, rng)
 
     def resample_from_condition(
         self,
@@ -217,7 +197,7 @@ class DiffusionPolicy(nnx.Module):
         if data_parallel:
             cond = self.shard_condition(cond)
             proposals_btd = self.shard_trajectory(proposals_btd)
-        return self._jit_resample_from_condition(cond, proposals_btd, n_timesteps, rng)
+        return self._resample_from_condition_impl(cond, proposals_btd, n_timesteps, rng)
 
     def forward(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray], rng: jax.Array) -> jnp.ndarray:
         return self.sample(input_features, rng=rng)
