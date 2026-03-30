@@ -1,0 +1,14 @@
+[
+    {
+        "reason": "You should change lanes to give way to vehicle 3 and then return to the original lane.",
+        "code": "done = self.follow_lane(self.left_lane)\nwhile not done():\n    yield\nself.decrease_speed(0.3)\nwhile self.ego_vehicle.is_ahead_of(3):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield"
+    },
+    {
+        "reason": "Since there are many vehicles in the left lane, you should change to the right lane and give way to vehicle 7 by slowing down.",
+        "code": "done = self.follow_lane(self.right_lane)\nwhile not done():\n    yield\nself.decrease_speed(0.2)\nwhile self.is_ahead_of(7):\n    yield\ndone = self.follow_lane(self.left_lane)\nwhile not done():\n    yield"
+    },
+    {
+        "reason": "There are many vehicles in the right lane, and vehicle 2 is approaching quickly from behind in the left lane. Therefore, you should maintain your current lane until vehicle 2 passes, and once it has passed, change to the left lane to give way to vehicle 1.",
+        "code": "done = self.follow_lane(self.current_lane)\nwhile self.is_ahead_of(2):\n    yield\ndone = self.follow_lane(self.left_lane)\nwhile not done():\n    yield\nself.decrease_speed(0.3)\nwhile self.is_ahead_of(1):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield"
+    }
+]

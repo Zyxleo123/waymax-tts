@@ -1,0 +1,12 @@
+{
+  "command": "Change to the left lane, increase your speed by 2.0 to move ahead of the traffic, and continue until you have successfully overtaken vehicle 6.",
+  "ego_idx": 1,
+  "offroad": false,
+  "overlap": false,
+  "scenario_idx": 99,
+  "target_idx": 6,
+  "task": "overtake",
+  "task_result": false,
+  "tfrecord": "/data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/validation/validation_tfexample.tfrecord-00000-of-00150",
+  "video_path": "test_es_output/overtake/20260322_213717/iter03/validation_tfexample.tfrecord-00000-of-00150.scenario_099.mp4"
+}

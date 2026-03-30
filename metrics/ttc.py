@@ -5,14 +5,8 @@ from dataclasses import dataclass
 import jax
 from jax import numpy as jnp
 
-from metrics.collision import (
-	ACTIVE_FRONT_COLLISION,
-	ACTIVE_REAR_COLLISION,
-	STOPPED_TRACK_COLLISION,
-	_pairwise_intersections,
-	_classify_collision,
-)
-from metrics.common import positions_xy, proposal_ego_area_masks, proposal_polygons, speed, yaw_from_states
+from metrics.collision import _pairwise_intersections
+from metrics.common import positions_xy, proposal_polygons, speed, yaw_from_states
 from metrics.helpers import World
 
 
@@ -29,9 +23,9 @@ def compute_ttc_metric(
 		ttc_fixed_speed: bool = False,
 		stopped_speed_threshold: float = 5e-3,
 ) -> TTCMetricResult:
+	del stopped_speed_threshold
 	states = jnp.asarray(trajectories, dtype=jnp.float32)
 	ego_polygons_xy = proposal_polygons(world, states, scale=world.collision_scale)
-	ego_in_multiple_lanes, ego_in_non_drivable_area = proposal_ego_area_masks(world, states)
 	ego_xy = positions_xy(states)
 	yaw = yaw_from_states(states, world=world)
 	ego_speed = speed(states, world=world, dt_s=world.prediction_dt_s)
@@ -52,7 +46,6 @@ def compute_ttc_metric(
 	projected_polygons = jnp.concatenate([projected_corners, projected_corners[..., :1, :]], axis=-2)
 
 	target_polygons = world.other_vehicle_future_polygons_xy[..., :4, :]
-	target_speed = world.other_vehicle_future_speed
 	target_valid = world.other_vehicle_future_valid
 
 	num_proposals, horizon = states.shape[:2]
@@ -75,24 +68,7 @@ def compute_ttc_metric(
 				target_t = target_polygons[:, current_idx, :, :]
 				hits = _pairwise_intersections(ego_t, target_t)
 				hits = hits & target_valid[:, current_idx][None, :] & (~seen_inner)
-				ego_off_route = ego_in_multiple_lanes[:, time_idx] | ego_in_non_drivable_area[:, time_idx]
-				target_speed_t = target_speed[:, current_idx]
-
-				def _classify_for_ego(ego_poly_xy):
-					return jax.vmap(
-							lambda target_poly_xy, s: _classify_collision(
-									ego_poly_xy,
-									target_poly_xy,
-									s,
-									stopped_speed_threshold,
-							),
-					)(target_t, target_speed_t)
-
-				collision_types = jax.vmap(_classify_for_ego)(ego_t)
-				front_like = hits & ((collision_types == ACTIVE_FRONT_COLLISION) | (collision_types == STOPPED_TRACK_COLLISION))
-				not_rear = hits & (collision_types != ACTIVE_REAR_COLLISION)
-				ttc_hits = front_like | (not_rear & ego_off_route[:, None])
-				any_hits = jnp.any(ttc_hits, axis=1)
+				any_hits = jnp.any(hits, axis=1)
 				score_next = jnp.where(any_hits, 0.0, score_inner)
 				time_next = jnp.where(any_hits, jnp.minimum(first_time_inner, time_idx), first_time_inner)
 				seen_next = seen_inner | hits

@@ -1,0 +1,14 @@
+[
+    {
+        "reason": "You must safely move onto the roadside before pulling over.",
+        "code": "done = self.move_to_roadside()\nwhile not done():\n    yield\nself.stop()"
+    },
+    {
+        "reason": "Since the vehicle is currently on the left side of the road, you must first move to the rightmost lane before pulling over.",
+        "code": "while self.right_lane is not None:\n    done = self.follow_lane(self.right_lane)\n    while not done():\n        yield\ndone = self.move_to_roadside()\nwhile not done():\n    yield\nself.stop()"
+    },
+    {
+        "reason": "You need to change to the right lane before pulling over, but since car 5 is quickly approaching from behind, you must let car 5 pass first, then change to the right lane and pull over.",
+        "code": "self.decrease_speed(0.8)\nwhile self.is_ahead_of(5):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield\ndone = self.move_to_roadside()\nwhile not done():\n    yield\nself.stop()"
+    }
+]

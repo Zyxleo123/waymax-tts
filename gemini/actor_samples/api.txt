@@ -1,0 +1,49 @@
+@property
+def left_lane(self):
+    # return the left lane
+
+@property
+def right_lane(self):
+    # return the right lane
+
+@property
+def current_lane(self):
+    # return ego vehicle's current lane
+
+def follow_lane(self, lane):
+    # let ego vehicle follows the given lane
+    # return a task completion predicate function (a function returns True if the ego vehicle is on the target lane)
+
+def increase_speed(self, speed_multiplier):
+    # increase speed by {speed_multiplier}
+    # does not return anything
+
+def decrease_speed(self, speed_multiplier):
+    # decrease speed by {speed_multiplier}
+    # does not return anything
+
+def is_ahead_of(self, vehicle_idx):
+    # check if the ego vehicle is ahead of vehicle_{vehicle_idx}
+    # return True if the ego vehicle is ahead of vehicle_{vehicle_idx}
+
+def is_behind_of(self, vehicle_idx):
+    # check if the ego vehicle is behind of vehcle_{vehicle_idx}
+    # return True if the ego vehicle is behind of vehicle_{vehicle_idx}
+
+def get_current_speed(self, vehicle_idx='ego'):
+    # return current speed of vehicle_{vehicle_idx}
+    # if vehicle_idx is set to 'ego', the function returns the current speed of the ego vehicle
+
+def set_speed(self, target_speed):
+    # set target speed to target_speed (m/s)
+    # does not return anything
+
+def stop(self):
+    # stop the ego vehicle
+    # does not return anything
+
+def move_to_roadside(self):
+    # move ego vehicle to roadside for pull-over
+    # must be called only when the ego vehicle is on the rightmost lane (i.e. self.right_lane is None)
+    # return a task completion predicate function (a function returns True if the ego vehicle is on the roadside)
+    

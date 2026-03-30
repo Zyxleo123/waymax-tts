@@ -7,6 +7,7 @@ import jax
 from jax import numpy as jnp
 
 from metrics.collision import compute_no_at_fault_collision
+from metrics.common import ProposalContext, build_proposal_context
 from metrics.comfort import compute_comfort_metric
 from metrics.lane_following import compute_lane_following_metric, compute_lane_goal_metric
 from metrics.offroad import compute_drivable_area_metric, compute_driving_direction_metric
@@ -84,10 +85,16 @@ class ProposalScorer:
 	def __init__(
 			self,
 			weighted_metric_weights: Mapping[str, float] | None = None,
+			max_score_steps: int = 20,
 	):
 		self._weighted_metric_weights = dict(DEFAULT_WEIGHTED_WEIGHTS)
 		if weighted_metric_weights is not None:
 			self._weighted_metric_weights.update(dict(weighted_metric_weights))
+		self._max_score_steps = int(max_score_steps)
+		if self._max_score_steps < 1:
+			raise ValueError(
+				f"max_score_steps must be >= 1, got {self._max_score_steps}."
+			)
 
 		self._enabled_multiplicative = set(MULTIPLICATIVE_METRICS)
 		self._enabled_weighted = set(WEIGHTED_METRICS)
@@ -126,10 +133,17 @@ class ProposalScorer:
 			raise ValueError(f"Only weighted metrics have weights, got: {name}")
 		self._weighted_metric_weights[metric_name] = float(weight)
 
+	@property
+	def max_score_steps(self) -> int:
+		return self._max_score_steps
+
 	def score_proposals(self, trajectories: jax.Array, world: Any) -> ScoreResult:
-		num_proposals = int(jnp.asarray(trajectories).shape[0])
-		multi_records = self._compute_multiplicative_metrics(trajectories, world)
-		optional_records = self._compute_optional_metrics(trajectories, world)
+		trajectories = jnp.asarray(trajectories, dtype=jnp.float32)
+		trajectories = trajectories[:, : self._max_score_steps, :]
+		num_proposals = int(trajectories.shape[0])
+		proposal_ctx = build_proposal_context(world, trajectories)
+		multi_records = self._compute_multiplicative_metrics(trajectories, world, proposal_ctx)
+		optional_records = self._compute_optional_metrics(trajectories, world, proposal_ctx)
 
 		multiplicative_metrics = {
 				name: record.score for name, record in multi_records.items()
@@ -149,6 +163,7 @@ class ProposalScorer:
 		weighted_records, raw_progress, normalized_progress = self._compute_weighted_metrics(
 				trajectories=trajectories,
 				world=world,
+				proposal_ctx=proposal_ctx,
 				multiplicative_scores=multiplicative_scores,
 		)
 		weighted_metrics = {
@@ -191,22 +206,42 @@ class ProposalScorer:
 				details=details,
 		)
 
-	def _compute_multiplicative_metrics(self, trajectories: jax.Array, world: Any) -> Dict[str, MetricRecord]:
+	def _compute_multiplicative_metrics(
+			self,
+			trajectories: jax.Array,
+			world: Any,
+			proposal_ctx: ProposalContext,
+	) -> Dict[str, MetricRecord]:
 		records: Dict[str, MetricRecord] = {}
 
 		if "no_collision" in self._enabled_multiplicative:
 			params = self._metric_params["no_collision"]
-			result = compute_no_at_fault_collision(trajectories=trajectories, world=world, **params)
+			result = compute_no_at_fault_collision(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["no_collision"] = MetricRecord(score=result.no_at_fault_collision_score, details=result)
 
 		if "drivable_area" in self._enabled_multiplicative:
 			params = self._metric_params["drivable_area"]
-			score = compute_drivable_area_metric(trajectories=trajectories, world=world, **params)
+			score = compute_drivable_area_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["drivable_area"] = MetricRecord(score=score)
 
 		if "driving_direction" in self._enabled_multiplicative:
 			params = self._metric_params["driving_direction"]
-			score = compute_driving_direction_metric(trajectories=trajectories, world=world, **params)
+			score = compute_driving_direction_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["driving_direction"] = MetricRecord(score=score)
 
 		if "speed_limit" in self._enabled_multiplicative:
@@ -220,6 +255,7 @@ class ProposalScorer:
 			self,
 			trajectories: jax.Array,
 			world: Any,
+			proposal_ctx: ProposalContext,
 			multiplicative_scores: jax.Array,
 	) -> tuple[Dict[str, MetricRecord], jax.Array, jax.Array]:
 		records: Dict[str, MetricRecord] = {}
@@ -231,6 +267,7 @@ class ProposalScorer:
 			raw_progress, normalized_progress = compute_progress_metric(
 					trajectories_xy=trajectories,
 					world=world,
+					proposal_ctx=proposal_ctx,
 					multiplicative_mask=multiplicative_scores,
 					**params,
 			)
@@ -243,27 +280,52 @@ class ProposalScorer:
 
 		if "comfortable" in self._enabled_weighted:
 			params = self._metric_params["comfortable"]
-			result = compute_comfort_metric(trajectories=trajectories, world=world, **params)
+			result = compute_comfort_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["comfortable"] = MetricRecord(score=result.score, details=result)
 
 		if "lane_following" in self._enabled_weighted:
 			params = self._metric_params["lane_following"]
-			score = compute_lane_following_metric(trajectories=trajectories, world=world, **params)
+			score = compute_lane_following_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["lane_following"] = MetricRecord(score=score)
 
 		if "proximity" in self._enabled_weighted:
 			params = self._require_metric_params("proximity", required=("lead_object_id",), allow_missing=True)
-			score = compute_proximity_metric(trajectories=trajectories, world=world, **params)
+			score = compute_proximity_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["proximity"] = MetricRecord(score=score)
 
 		return records, raw_progress, normalized_progress
 
-	def _compute_optional_metrics(self, trajectories: jax.Array, world: Any) -> Dict[str, MetricRecord]:
+	def _compute_optional_metrics(
+			self,
+			trajectories: jax.Array,
+			world: Any,
+			proposal_ctx: ProposalContext,
+	) -> Dict[str, MetricRecord]:
 		records: Dict[str, MetricRecord] = {}
 
 		if "yield" in self._enabled_optional:
 			params = self._require_metric_params("yield", required=("target_object_id",))
-			score = compute_yield_metric(trajectories=trajectories, world=world, **params)
+			score = compute_yield_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["yield"] = MetricRecord(score=score)
 
 		if "lane" in self._enabled_optional:
@@ -278,7 +340,12 @@ class ProposalScorer:
 
 		if "overtake" in self._enabled_optional:
 			params = self._require_metric_params("overtake", required=("target_object_id",))
-			score = compute_overtake_metric(trajectories=trajectories, world=world, **params)
+			score = compute_overtake_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["overtake"] = MetricRecord(score=score)
 
 		if "stop" in self._enabled_optional:
@@ -287,7 +354,12 @@ class ProposalScorer:
 
 		if "give_way" in self._enabled_optional:
 			params = self._require_metric_params("give_way", required=("target_object_id",))
-			score = compute_give_way_metric(trajectories=trajectories, world=world, **params)
+			score = compute_give_way_metric(
+				trajectories=trajectories,
+				world=world,
+				proposal_ctx=proposal_ctx,
+				**params,
+			)
 			records["give_way"] = MetricRecord(score=score)
 
 		return records

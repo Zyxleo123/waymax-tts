@@ -7,6 +7,7 @@ import jax
 from jax import numpy as jnp
 
 from metrics.helpers import World
+from metrics.common import ProposalContext, non_drivable_area_from_open_polygons, open_polygons
 
 
 NO_COLLISION = 0
@@ -24,24 +25,7 @@ class CollisionMetricResult:
 	all_collisions: jax.Array
 	collided_target_mask: jax.Array
 	ego_polygons_xy: jax.Array
-	ego_in_multiple_lanes: jax.Array
 	ego_in_non_drivable_area: jax.Array
-
-
-def _open_polygons(polygons_xy: jax.Array) -> jax.Array:
-	polygons = jnp.asarray(polygons_xy, dtype=jnp.float32)
-	if polygons.ndim != 4:
-		raise ValueError(
-				f"polygons_xy must have shape (batch, horizon, num_vertices, 2), got {polygons.shape}",
-		)
-	if polygons.shape[-1] != 2:
-		raise ValueError(f"polygons_xy last dimension must be 2, got {polygons.shape[-1]}")
-	if int(polygons.shape[-2]) == 5:
-		return polygons[..., :4, :]
-	if int(polygons.shape[-2]) == 4:
-		return polygons
-	raise ValueError(f"polygons_xy must have 4 or 5 vertices, got {polygons.shape[-2]}")
-
 
 def _polygon_center(polygons_xy: jax.Array) -> jax.Array:
 	return jnp.mean(polygons_xy, axis=-2)
@@ -146,70 +130,40 @@ def _proposal_polygons(
 def _ego_area_masks(
 		world: World,
 		ego_map_polygons_xy: jax.Array,
-) -> Tuple[jax.Array, jax.Array]:
-	open_polygons = _open_polygons(ego_map_polygons_xy)
-	if not world.lane_nodes:
-		num_proposals, horizon = open_polygons.shape[:2]
-		return (
-				jnp.zeros((num_proposals, horizon), dtype=jnp.bool_),
-				jnp.ones((num_proposals, horizon), dtype=jnp.bool_),
-		)
-
-	node_positions = jnp.stack([node.position for node in world.lane_nodes], axis=0).astype(jnp.float32)
-	node_lane_ids = jnp.asarray([node.lane_id for node in world.lane_nodes], dtype=jnp.int32)
-
-	center_xy = jnp.mean(open_polygons, axis=-2)
-	corners_xy = open_polygons
-	center_diffs = center_xy[..., None, :] - node_positions[None, None, :, :]
-	center_dists = jnp.linalg.norm(center_diffs, axis=-1)
-	center_near_mask = center_dists <= world.drivable_area_tolerance_m
-
-	lane_diff = node_lane_ids[:, None] != node_lane_ids[None, :]
-	pairwise_near = center_near_mask[..., :, None] & center_near_mask[..., None, :]
-	multiple_lanes = jnp.any(pairwise_near & lane_diff[None, None, :, :], axis=(-2, -1))
-
-	corner_diffs = corners_xy[..., None, :] - node_positions[None, None, None, :, :]
-	corner_dists = jnp.linalg.norm(corner_diffs, axis=-1)
-	corner_min_dists = jnp.min(corner_dists, axis=-1)
-	non_drivable_area = jnp.any(corner_min_dists > world.drivable_area_tolerance_m, axis=-1)
-	return multiple_lanes.astype(jnp.bool_), non_drivable_area.astype(jnp.bool_)
-
-
-def _classify_collision(
-		ego_poly_xy: jax.Array,
-		target_poly_xy: jax.Array,
-		target_speed: jax.Array,
-		stopped_speed_threshold: float,
 ) -> jax.Array:
-	ego_center = _polygon_center(ego_poly_xy)
-	target_center = _polygon_center(target_poly_xy)
-	ego_heading = _polygon_heading_xy(ego_poly_xy)
-	rel = target_center - ego_center
+	return non_drivable_area_from_open_polygons(world, open_polygons(ego_map_polygons_xy))
 
-	longitudinal = jnp.dot(rel, ego_heading)
-	lateral = ego_heading[0] * rel[1] - ego_heading[1] * rel[0]
-	is_stopped = target_speed <= jnp.asarray(stopped_speed_threshold, dtype=jnp.float32)
-	is_front = longitudinal >= jnp.abs(lateral)
-	is_rear = -longitudinal > jnp.abs(lateral)
 
-	return jnp.where(
-			is_stopped,
-			jnp.asarray(STOPPED_TRACK_COLLISION, dtype=jnp.int32),
-			jnp.where(
-					is_front,
-					jnp.asarray(ACTIVE_FRONT_COLLISION, dtype=jnp.int32),
-					jnp.where(
-							is_rear,
-							jnp.asarray(ACTIVE_REAR_COLLISION, dtype=jnp.int32),
-							jnp.asarray(ACTIVE_LATERAL_COLLISION, dtype=jnp.int32),
-					),
-			),
-	)
+def _bounding_radius(polygons_xy: jax.Array, centers_xy: jax.Array) -> jax.Array:
+	return jnp.max(
+		jnp.linalg.norm(polygons_xy - centers_xy[..., None, :], axis=-1),
+		axis=-1,
+	).astype(jnp.float32)
+
+
+def _pairwise_intersections_with_mask(
+		ego_polygons_xy: jax.Array,
+		target_polygons_xy: jax.Array,
+		active_mask: jax.Array,
+) -> jax.Array:
+	def _for_ego(ego_poly_xy: jax.Array, active_row: jax.Array) -> jax.Array:
+		def _for_target(target_poly_xy: jax.Array, active: jax.Array) -> jax.Array:
+			return jax.lax.cond(
+				active,
+				lambda _: _intersects_convex_polygons(ego_poly_xy, target_poly_xy),
+				lambda _: jnp.asarray(False, dtype=jnp.bool_),
+				operand=None,
+			)
+
+		return jax.vmap(_for_target)(target_polygons_xy, active_row)
+
+	return jax.vmap(_for_ego)(ego_polygons_xy, active_mask)
 
 
 def compute_no_at_fault_collision(
 		world: World,
 		trajectories: jax.Array,
+		proposal_ctx: ProposalContext | None = None,
 		target_is_agent: Optional[jax.Array] = None,
 		stopped_speed_threshold: float = 5e-3,
 ) -> CollisionMetricResult:
@@ -223,23 +177,28 @@ def compute_no_at_fault_collision(
 		target_is_agent: Optional `(num_targets,)` boolean mask.
 		stopped_speed_threshold: Threshold below which a target is treated as stopped.
 	"""
-	states = _as_state_array(trajectories)
-	ego_polygons_xy = _proposal_polygons(
-			world,
-			states,
-			scale=world.collision_scale,
-			length_width_reduction_m=0.0,
-	)
-	ego_map_polygons_xy = _proposal_polygons(
-			world,
-			states,
-			scale=1.0,
-			length_width_reduction_m=world.drivable_area_reduction_m,
-	)
-	ego_in_multiple_lanes, ego_in_non_drivable_area = _ego_area_masks(world, ego_map_polygons_xy)
+	if proposal_ctx is None:
+		states = _as_state_array(trajectories)
+		ego_polygons_xy = _proposal_polygons(
+				world,
+				states,
+				scale=world.collision_scale,
+				length_width_reduction_m=0.0,
+		)
+		ego_map_polygons_xy = _proposal_polygons(
+				world,
+				states,
+				scale=1.0,
+				length_width_reduction_m=world.drivable_area_reduction_m,
+		)
+		ego_in_non_drivable_area = _ego_area_masks(world, ego_map_polygons_xy)
+	else:
+		states = proposal_ctx.states
+		ego_polygons_xy = proposal_ctx.ego_polygons_xy
+		ego_in_non_drivable_area = proposal_ctx.ego_non_drivable_area
 
+	del target_is_agent, stopped_speed_threshold
 	target_polygons_xy = world.other_vehicle_future_polygons_xy
-	target_speed = world.other_vehicle_future_speed
 	target_valid = world.other_vehicle_future_valid
 
 	if states.shape[1] != target_polygons_xy.shape[1]:
@@ -248,8 +207,8 @@ def compute_no_at_fault_collision(
 				f"got {states.shape[1]} and {target_polygons_xy.shape[1]}",
 		)
 
-	ego_polygons = _open_polygons(ego_polygons_xy)
-	target_polygons = _open_polygons(target_polygons_xy)
+	ego_polygons = proposal_ctx.ego_open_polygons_xy if proposal_ctx is not None else open_polygons(ego_polygons_xy)
+	target_polygons = open_polygons(target_polygons_xy)
 
 	if ego_polygons.shape[1] != target_polygons.shape[1]:
 		raise ValueError(
@@ -261,16 +220,16 @@ def compute_no_at_fault_collision(
 	horizon = ego_polygons.shape[1]
 	num_targets = target_polygons.shape[0]
 
-	if target_is_agent is None:
-		target_is_agent = jnp.ones((num_targets,), dtype=jnp.bool_)
-	else:
-		target_is_agent = jnp.asarray(target_is_agent, dtype=jnp.bool_)
-
 	init_score = jnp.ones((num_proposals,), dtype=jnp.float32)
 	init_time = jnp.full((num_proposals,), jnp.inf, dtype=jnp.float32)
 	init_type = jnp.full((num_proposals,), NO_COLLISION, dtype=jnp.int32)
-	init_all_collisions = jnp.ones((3, num_proposals), dtype=jnp.float32)
+	init_all_collisions = jnp.ones((1, num_proposals), dtype=jnp.float32)
 	init_seen = jnp.zeros((num_proposals, num_targets), dtype=jnp.bool_)
+
+	ego_centers = proposal_ctx.xy if proposal_ctx is not None else states[..., :2]
+	ego_radii = _bounding_radius(ego_polygons, ego_centers)
+	target_centers = world.other_vehicle_future_centers_xy.astype(jnp.float32)
+	target_radii = _bounding_radius(target_polygons, target_centers)
 
 	def _scan_step(carry, time_idx):
 		score, first_time, first_type, all_collisions, seen_targets = carry
@@ -278,64 +237,26 @@ def compute_no_at_fault_collision(
 		ego_t = ego_polygons[:, time_idx, :, :]
 		target_t = target_polygons[:, time_idx, :, :]
 		valid_hits = target_valid[:, time_idx]
-		pair_hits = _pairwise_intersections(ego_t, target_t)
-		pair_hits = pair_hits & valid_hits[None, :] & (~seen_targets)
+		ego_center_t = ego_centers[:, time_idx, :]
+		target_center_t = target_centers[:, time_idx, :]
+		center_dists = jnp.linalg.norm(
+			ego_center_t[:, None, :] - target_center_t[None, :, :],
+			axis=-1,
+		)
+		broad_phase_hits = center_dists <= (ego_radii[:, time_idx, None] + target_radii[None, :, time_idx])
+		active_pairs = broad_phase_hits & valid_hits[None, :] & (~seen_targets)
+		pair_hits = _pairwise_intersections_with_mask(ego_t, target_t, active_pairs)
 
-		ego_off_route = ego_in_multiple_lanes[:, time_idx] | ego_in_non_drivable_area[:, time_idx]
-		target_speed_t = target_speed[:, time_idx]
-
-		def _classify_for_ego(ego_poly_xy: jax.Array) -> jax.Array:
-			return jax.vmap(
-					lambda target_poly_xy, speed: _classify_collision(
-							ego_poly_xy,
-							target_poly_xy,
-							speed,
-							stopped_speed_threshold,
-					),
-			)(target_t, target_speed_t)
-
-		collision_types = jax.vmap(_classify_for_ego)(ego_t)
-		front_hits = pair_hits & (collision_types == ACTIVE_FRONT_COLLISION)
-		stopped_hits = pair_hits & (collision_types == STOPPED_TRACK_COLLISION)
-		lateral_hits = pair_hits & (collision_types == ACTIVE_LATERAL_COLLISION)
-		rear_hits = pair_hits & (collision_types == ACTIVE_REAR_COLLISION)
-
-		at_fault_hits = front_hits | stopped_hits | (lateral_hits & ego_off_route[:, None])
-		any_at_fault = jnp.any(at_fault_hits, axis=1)
-
-		target_penalty = jnp.where(target_is_agent, 0.0, 0.5).astype(jnp.float32)
-		penalties = jnp.where(at_fault_hits, target_penalty[None, :], 1.0)
-		step_score = jnp.min(penalties, axis=1, initial=1.0)
-		score = jnp.minimum(score, step_score)
-		first_time = jnp.where(any_at_fault, jnp.minimum(first_time, time_idx), first_time)
-
-		step_type = jnp.where(
-				jnp.any(front_hits, axis=1),
-				ACTIVE_FRONT_COLLISION,
-				jnp.where(
-						jnp.any(stopped_hits, axis=1),
-						STOPPED_TRACK_COLLISION,
-						jnp.where(
-								jnp.any(lateral_hits, axis=1),
-								ACTIVE_LATERAL_COLLISION,
-								jnp.where(
-										jnp.any(rear_hits, axis=1),
-										ACTIVE_REAR_COLLISION,
-										NO_COLLISION,
-								),
-						),
-				),
-		).astype(jnp.int32)
-		first_type = jnp.where((first_type == NO_COLLISION) & (step_type != NO_COLLISION), step_type, first_type)
-
+		any_collision = jnp.any(pair_hits, axis=1)
+		score = jnp.where(any_collision, 0.0, score)
+		first_time = jnp.where(any_collision, jnp.minimum(first_time, time_idx), first_time)
+		first_type = jnp.where(
+			(first_type == NO_COLLISION) & any_collision,
+			ACTIVE_FRONT_COLLISION,
+			first_type,
+		)
 		all_collisions = all_collisions.at[0].set(
-				jnp.where(jnp.any(front_hits, axis=1), 0.0, all_collisions[0]),
-		)
-		all_collisions = all_collisions.at[1].set(
-				jnp.where(jnp.any(stopped_hits, axis=1), 0.0, all_collisions[1]),
-		)
-		all_collisions = all_collisions.at[2].set(
-				jnp.where(jnp.any(lateral_hits, axis=1), 0.0, all_collisions[2]),
+			jnp.where(any_collision, 0.0, all_collisions[0]),
 		)
 
 		seen_targets = seen_targets | pair_hits
@@ -354,6 +275,5 @@ def compute_no_at_fault_collision(
 			all_collisions=all_collisions,
 			collided_target_mask=seen_targets,
 			ego_polygons_xy=ego_polygons_xy,
-			ego_in_multiple_lanes=ego_in_multiple_lanes,
 			ego_in_non_drivable_area=ego_in_non_drivable_area,
 	)

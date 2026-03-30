@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import jax
 from jax import numpy as jnp
 
+from metrics.common import ProposalContext
 from metrics.helpers import World
 
 
@@ -56,6 +57,7 @@ def get_reference_centerline(world: World, lane_idx: Optional[int] = None) -> ja
 def compute_progress_raw(
 		world: World,
 		trajectories_xy: jax.Array,
+		proposal_ctx: ProposalContext | None = None,
 		reference_centerline_xy: Optional[jax.Array] = None,
 ) -> jax.Array:
 	"""Computes non-normalized progress in meters along the local centerline.
@@ -68,7 +70,7 @@ def compute_progress_raw(
 	Returns:
 		Array of shape `(num_proposals,)` containing raw progress in meters.
 	"""
-	xy = _as_xy(trajectories_xy)
+	xy = _as_xy(trajectories_xy) if proposal_ctx is None else proposal_ctx.xy
 	centerline_xy = (
 			get_reference_centerline(world)
 			if reference_centerline_xy is None
@@ -126,6 +128,7 @@ def normalize_progress(
 def compute_progress_metric(
 		world: World,
 		trajectories_xy: jax.Array,
+		proposal_ctx: ProposalContext | None = None,
 		multiplicative_mask: Optional[jax.Array] = None,
 		progress_distance_threshold: float = 0.1,
 		reference_centerline_xy: Optional[jax.Array] = None,
@@ -134,6 +137,7 @@ def compute_progress_metric(
 	raw_progress = compute_progress_raw(
 			world=world,
 			trajectories_xy=trajectories_xy,
+			proposal_ctx=proposal_ctx,
 			reference_centerline_xy=reference_centerline_xy,
 	)
 	normalized_progress = normalize_progress(

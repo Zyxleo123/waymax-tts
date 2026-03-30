@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import jax
 from jax import numpy as jnp
 
 from metrics.helpers import World
+
+
+@dataclass
+class ProposalContext:
+	states: jax.Array
+	xy: jax.Array
+	yaw: jax.Array
+	speed: jax.Array
+	trajectory_heading: jax.Array
+	heading_xy: jax.Array
+	ego_polygons_xy: jax.Array
+	ego_open_polygons_xy: jax.Array
+	ego_map_polygons_xy: jax.Array
+	ego_map_open_polygons_xy: jax.Array
+	ego_non_drivable_area: jax.Array
 
 
 def as_state_array(trajectories: jax.Array) -> jax.Array:
@@ -95,37 +111,88 @@ def proposal_polygons(
 	return jnp.concatenate([corners, corners[..., :1, :]], axis=-2).astype(jnp.float32)
 
 
-def proposal_ego_area_masks(
-		world: World,
-		trajectories: jax.Array,
-) -> Tuple[jax.Array, jax.Array]:
-	if not world.lane_nodes:
-		num_proposals = as_state_array(trajectories).shape[0]
-		horizon = as_state_array(trajectories).shape[1]
-		return (
-				jnp.zeros((num_proposals, horizon), dtype=jnp.bool_),
-				jnp.ones((num_proposals, horizon), dtype=jnp.bool_),
+def open_polygons(polygons_xy: jax.Array) -> jax.Array:
+	polygons = jnp.asarray(polygons_xy, dtype=jnp.float32)
+	if polygons.ndim != 4:
+		raise ValueError(
+				f"polygons_xy must have shape (batch, horizon, num_vertices, 2), got {polygons.shape}",
 		)
+	if polygons.shape[-1] != 2:
+		raise ValueError(f"polygons_xy last dimension must be 2, got {polygons.shape[-1]}")
+	if int(polygons.shape[-2]) == 5:
+		return polygons[..., :4, :]
+	if int(polygons.shape[-2]) == 4:
+		return polygons
+	raise ValueError(f"polygons_xy must have 4 or 5 vertices, got {polygons.shape[-2]}")
 
-	polygons = proposal_polygons(
-			world,
-			trajectories,
-			scale=1.0,
-			length_width_reduction_m=world.drivable_area_reduction_m,
-	)[..., :4, :]
+
+def non_drivable_area_from_open_polygons(
+		world: World,
+		open_polygons_xy: jax.Array,
+) -> jax.Array:
+	if not world.lane_nodes:
+		num_proposals, horizon = open_polygons_xy.shape[:2]
+		return jnp.ones((num_proposals, horizon), dtype=jnp.bool_)
+
 	node_positions = jnp.stack([node.position for node in world.lane_nodes], axis=0).astype(jnp.float32)
-	node_lane_ids = jnp.asarray([node.lane_id for node in world.lane_nodes], dtype=jnp.int32)
-
-	center_xy = jnp.mean(polygons, axis=-2)
-	center_diffs = center_xy[..., None, :] - node_positions[None, None, :, :]
-	center_dists = jnp.linalg.norm(center_diffs, axis=-1)
-	center_near_mask = center_dists <= world.drivable_area_tolerance_m
-	lane_diff = node_lane_ids[:, None] != node_lane_ids[None, :]
-	pairwise_near = center_near_mask[..., :, None] & center_near_mask[..., None, :]
-	multiple_lanes = jnp.any(pairwise_near & lane_diff[None, None, :, :], axis=(-2, -1))
-
-	corner_diffs = polygons[..., None, :] - node_positions[None, None, None, :, :]
+	corner_diffs = open_polygons_xy[..., None, :] - node_positions[None, None, None, :, :]
 	corner_dists = jnp.linalg.norm(corner_diffs, axis=-1)
 	corner_min_dists = jnp.min(corner_dists, axis=-1)
 	non_drivable_area = jnp.any(corner_min_dists > world.drivable_area_tolerance_m, axis=-1)
-	return multiple_lanes.astype(jnp.bool_), non_drivable_area.astype(jnp.bool_)
+	return non_drivable_area.astype(jnp.bool_)
+
+
+def build_proposal_context(world: World, trajectories: jax.Array) -> ProposalContext:
+	states = as_state_array(trajectories)
+	xy = states[..., :2]
+	yaw = yaw_from_states(states, world=world)
+	speed_bh = speed(states, world=world, dt_s=world.prediction_dt_s)
+	trajectory_heading = headings_from_xy(xy)
+	heading_xy = jnp.stack([jnp.cos(yaw), jnp.sin(yaw)], axis=-1).astype(jnp.float32)
+	ego_polygons_xy = proposal_polygons(
+		world,
+		states,
+		scale=world.collision_scale,
+		length_width_reduction_m=0.0,
+	)
+	ego_open_polygons_xy = open_polygons(ego_polygons_xy)
+	ego_map_polygons_xy = proposal_polygons(
+		world,
+		states,
+		scale=1.0,
+		length_width_reduction_m=world.drivable_area_reduction_m,
+	)
+	ego_map_open_polygons_xy = open_polygons(ego_map_polygons_xy)
+	ego_non_drivable_area = non_drivable_area_from_open_polygons(world, ego_map_open_polygons_xy)
+	return ProposalContext(
+		states=states,
+		xy=xy.astype(jnp.float32),
+		yaw=yaw.astype(jnp.float32),
+		speed=speed_bh.astype(jnp.float32),
+		trajectory_heading=trajectory_heading.astype(jnp.float32),
+		heading_xy=heading_xy,
+		ego_polygons_xy=ego_polygons_xy.astype(jnp.float32),
+		ego_open_polygons_xy=ego_open_polygons_xy.astype(jnp.float32),
+		ego_map_polygons_xy=ego_map_polygons_xy.astype(jnp.float32),
+		ego_map_open_polygons_xy=ego_map_open_polygons_xy.astype(jnp.float32),
+		ego_non_drivable_area=ego_non_drivable_area.astype(jnp.bool_),
+	)
+
+
+def proposal_ego_area_masks(
+		world: World,
+		trajectories: jax.Array,
+		proposal_ctx: ProposalContext | None = None,
+) -> jax.Array:
+	if proposal_ctx is not None:
+		return proposal_ctx.ego_non_drivable_area
+	states = as_state_array(trajectories)
+	if not world.lane_nodes:
+		return jnp.ones(states.shape[:2], dtype=jnp.bool_)
+	polygons = proposal_polygons(
+			world,
+			states,
+			scale=1.0,
+			length_width_reduction_m=world.drivable_area_reduction_m,
+	)
+	return non_drivable_area_from_open_polygons(world, open_polygons(polygons))

@@ -79,6 +79,7 @@ class LaneGraph:
 		point_dirs_xy = jnp.stack([dir_x[mask], dir_y[mask]], axis=-1).astype(jnp.float32)
 
 		lane_ids = jnp.unique(point_ids).astype(jnp.int32)
+		print(f"Extracted {int(lane_ids.shape[0])} unique lane_ids from {int(point_ids.shape[0])} points", flush=True)
 
 		points_by_lane: Dict[int, jax.Array] = {}
 		point_dirs_by_lane: Dict[int, jax.Array] = {}
@@ -122,7 +123,6 @@ class EgoArea:
 	corner_min_distances_m: jax.Array
 	center_min_distance_m: jax.Array
 	heading_error_rad: jax.Array
-	multiple_lanes: jax.Array
 	non_drivable_area: jax.Array
 
 	@classmethod
@@ -130,7 +130,6 @@ class EgoArea:
 		empty_xy = jnp.empty((0, 2), dtype=jnp.float32)
 		empty_i32 = jnp.empty((0,), dtype=jnp.int32)
 		empty_f32 = jnp.empty((0,), dtype=jnp.float32)
-		false_scalar = jnp.asarray(False, dtype=jnp.bool_)
 		return cls(
 				lane_node_index=None,
 				lane_id=None,
@@ -144,8 +143,7 @@ class EgoArea:
 				corner_min_distances_m=empty_f32,
 				center_min_distance_m=jnp.asarray(jnp.inf, dtype=jnp.float32),
 				heading_error_rad=jnp.asarray(jnp.pi, dtype=jnp.float32),
-				multiple_lanes=false_scalar,
-				non_drivable_area=false_scalar,
+				non_drivable_area=jnp.asarray(False, dtype=jnp.bool_),
 		)
 
 
@@ -210,18 +208,13 @@ class World:
 			batch_index: Optional[Union[int, Sequence[int]]] = None,
 			prediction_horizon: int = 10,
 			prediction_dt_s: float = 0.1,
-			centerline_radius_m: float = 150.0,
+			centerline_radius_m: float = 200.0,
 			centerline_lateral_tolerance_m: float = 0.5,
 			drivable_area_tolerance_m: float = 1.5,
 			drivable_area_reduction_m: float = 0.0,
 			collision_scale: float = 1.0,
 	):
-		roadgraph_points = getattr(simulator_state, "road_graph", None)
-		if roadgraph_points is None:
-			roadgraph_points = getattr(simulator_state, "roadgraph_points", None)
-
-		if roadgraph_points is None:
-			raise ValueError("simulator_state must include road_graph or roadgraph_points")
+		roadgraph_points = self._extract_roadgraph_points(simulator_state)
 
 		self.simulator_state = simulator_state
 		self.batch_index = batch_index
@@ -272,6 +265,60 @@ class World:
 		self.other_vehicle_future_valid = jnp.empty((0, self.prediction_horizon + 1), dtype=jnp.bool_)
 		self.other_vehicle_future_speed = jnp.empty((0, self.prediction_horizon + 1), dtype=jnp.float32)
 		self._next_non_ego_abs_index = 1
+		self.lane_nodes = None
+		self.update(simulator_state)
+
+	@staticmethod
+	def _extract_roadgraph_points(simulator_state: datatypes.SimulatorState):
+		roadgraph_points = getattr(simulator_state, "road_graph", None)
+		if roadgraph_points is None:
+			roadgraph_points = getattr(simulator_state, "roadgraph_points", None)
+		if roadgraph_points is None:
+			raise ValueError("simulator_state must include road_graph or roadgraph_points")
+		return roadgraph_points
+
+	def _current_state_timestep(self, simulator_state: datatypes.SimulatorState) -> int:
+		timestep = _select_batch(
+				jnp.asarray(simulator_state.timestep),
+				trailing_dims=0,
+				batch_index=self.batch_index,
+		)
+		return _scalar_int(timestep)
+
+	def sync(
+			self,
+			simulator_state: datatypes.SimulatorState,
+			*,
+			prediction_horizon: Optional[int] = None,
+			prediction_dt_s: Optional[float] = None,
+	) -> None:
+		desired_horizon = self.prediction_horizon if prediction_horizon is None else int(prediction_horizon)
+		desired_dt_s = self.prediction_dt_s if prediction_dt_s is None else float(prediction_dt_s)
+		roadgraph_points = self._extract_roadgraph_points(simulator_state)
+		desired_timestep = self._current_state_timestep(simulator_state)
+		same_state_object = simulator_state is self.simulator_state
+		same_roadgraph = roadgraph_points is self.roadgraph_points
+		same_timestep = desired_timestep == int(self.vehiclegraph.timestep)
+		same_horizon = desired_horizon == self.prediction_horizon
+		same_dt_s = desired_dt_s == self.prediction_dt_s
+
+		if same_state_object and same_roadgraph and same_timestep and same_horizon and same_dt_s:
+			return
+
+		self.simulator_state = simulator_state
+		self.prediction_horizon = desired_horizon
+		self.prediction_dt_s = desired_dt_s
+		if not same_roadgraph:
+			self.roadgraph_points = roadgraph_points
+			self.lanegraph = LaneGraph.from_roadgraph_points(
+					roadgraph_points=roadgraph_points,
+					batch_index=self.batch_index,
+			)
+			self.drivable_area_point_ids = self.lanegraph.point_ids
+			self.drivable_area_point_types = self.lanegraph.point_types
+			self.drivable_area_points_xy = self.lanegraph.points_xy
+			self.drivable_area_point_dirs_xy = self.lanegraph.point_dirs_xy
+			self.drivable_area_lane_ids = self.lanegraph.lane_ids
 		self.update(simulator_state)
 
 	def _ensure_vehicle_capacity(self, required_size: int) -> None:
@@ -338,7 +385,7 @@ class World:
 
 	def update(self, simulator_state: datatypes.SimulatorState) -> None:
 		self.simulator_state = simulator_state
-		self.vehiclegraph.timestep = _scalar_int(simulator_state.timestep)
+		self.vehiclegraph.timestep = self._current_state_timestep(simulator_state)
 
 		traj = simulator_state.sim_trajectory
 		metadata = simulator_state.object_metadata
@@ -408,7 +455,8 @@ class World:
 			self.vehiclegraph.is_ego = self.vehiclegraph.is_ego.at[0].set(True)
 
 		self._rebuild_vehicle_geometry()
-		self._build_lane_nodes()
+		if self.lane_nodes is None:
+			self._build_lane_nodes()
 		self._rebuild_metric_cache()
 		self._rebuild_other_vehicle_predictions()
 
@@ -607,7 +655,6 @@ class World:
 			corner_lane_indices = jnp.empty((0,), dtype=jnp.int32)
 			corner_lane_ids = jnp.empty((0,), dtype=jnp.int32)
 			corner_min_distances = jnp.empty((0,), dtype=jnp.float32)
-			multiple_lanes = jnp.asarray(False, dtype=jnp.bool_)
 			non_drivable_area = jnp.asarray(False, dtype=jnp.bool_)
 		else:
 			corner_diffs = self.ego_map_corners_xy[:, None, :] - node_positions[None, :, :]
@@ -615,12 +662,6 @@ class World:
 			corner_lane_indices = jnp.argmin(corner_dists, axis=1).astype(jnp.int32)
 			corner_min_distances = jnp.min(corner_dists, axis=1).astype(jnp.float32)
 			corner_lane_ids = node_lane_ids[corner_lane_indices]
-			nearby_lane_ids = node_lane_ids[center_dists <= self.drivable_area_tolerance_m]
-			if int(nearby_lane_ids.shape[0]) == 0:
-				unique_lane_ids = jnp.empty((0,), dtype=jnp.int32)
-			else:
-				unique_lane_ids = jnp.unique(nearby_lane_ids)
-			multiple_lanes = jnp.asarray(int(unique_lane_ids.shape[0]) > 1, dtype=jnp.bool_)
 			non_drivable_area = jnp.asarray(
 					bool(jnp.any(corner_min_distances > self.drivable_area_tolerance_m)),
 					dtype=jnp.bool_,
@@ -639,7 +680,6 @@ class World:
 				corner_min_distances_m=corner_min_distances,
 				center_min_distance_m=center_min_dist,
 				heading_error_rad=heading_error,
-				multiple_lanes=multiple_lanes,
 				non_drivable_area=non_drivable_area,
 		)
 
@@ -749,10 +789,6 @@ class World:
 	@property
 	def ego_lane_id(self) -> Optional[int]:
 		return self.ego_area.lane_id
-
-	@property
-	def ego_in_multiple_lanes(self) -> bool:
-		return bool(self.ego_area.multiple_lanes)
 
 	@property
 	def ego_in_non_drivable_area(self) -> bool:

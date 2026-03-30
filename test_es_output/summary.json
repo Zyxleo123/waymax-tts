@@ -1,0 +1,3765 @@
+{
+  "checkpoint_path": "/data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0420",
+  "elite_size": 8,
+  "episodes": [
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8517985939979553,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.41589105129241943,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.7932723760604858
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8039171099662781
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8255597352981567
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8295663595199585
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8123809695243835
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8048235774040222
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.8049062490463257
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8028144240379333
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8027443885803223
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8049594759941101
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8131431937217712
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8113138675689697
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8160800337791443
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8224412798881531
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8324602246284485
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8404220342636108
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8460519313812256
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8517985939979553
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8517985939979553,
+          "final_score": 0.8517985939979553,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_012.target_007.mp4",
+          "sample_index": 0,
+          "scenario_index": 2,
+          "source_scenario_index": 12,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 2,
+      "source_scenario_index": 12,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8499169945716858,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.7032967209815979,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.773168683052063
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8397082090377808
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8312491774559021
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8173277974128723
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.7983733415603638
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8234124183654785
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.773978590965271
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8102769255638123
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.7473485469818115
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.7538776397705078
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8109970688819885
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8293524980545044
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8389065265655518
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8431283831596375
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8459911346435547
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.849726140499115
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8499585390090942
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8499169945716858
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8499169945716858,
+          "final_score": 0.8499169945716858,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_013.target_005.mp4",
+          "sample_index": 0,
+          "scenario_index": 3,
+          "source_scenario_index": 13,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 3,
+      "source_scenario_index": 13,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9896160364151001,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.6395602822303772,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.864878237247467
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8755994439125061
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8881056904792786
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.901939868927002
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.9167078733444214
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9209891557693481
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9276227951049805
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.934891402721405
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.940183162689209
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.941536545753479
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.940907895565033
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9490239024162292
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9519912600517273
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9547903537750244
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9448660016059875
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.974406361579895
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9865195155143738
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9896160364151001
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9896160364151001,
+          "final_score": 0.9896160364151001,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_014.target_007.mp4",
+          "sample_index": 0,
+          "scenario_index": 4,
+          "source_scenario_index": 14,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 4,
+      "source_scenario_index": 14,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.7493067979812622,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.9999999403953552,
+                "max": 0.9999999403953552,
+                "mean": 0.3296703100204468,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.6250608563423157
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.653728187084198
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.6440767645835876
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.665206253528595
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.6450231075286865
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.6420961618423462
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.6183458566665649
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.6527010798454285
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.7400386929512024
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.6457720994949341
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.6557605266571045
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.7003523111343384
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.6820657253265381
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.7305958271026611
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.7159249186515808
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.7265098094940186
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.7488378882408142
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.7493067979812622
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.7493067979812622,
+          "final_score": 0.7493067979812622,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_018.target_007.mp4",
+          "sample_index": 0,
+          "scenario_index": 8,
+          "source_scenario_index": 18,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 8,
+      "source_scenario_index": 18,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9869656562805176,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.5042878985404968,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.823222279548645
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8588656783103943
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8758489489555359
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8922534584999084
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.9182747602462769
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9195582270622253
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9286000728607178
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9407727122306824
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9414759874343872
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.952032744884491
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9519599080085754
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9528169631958008
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9644966125488281
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9701980352401733
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9685835242271423
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9671413898468018
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9790717959403992
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9869656562805176
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9869656562805176,
+          "final_score": 0.9869656562805176,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_023.target_007.mp4",
+          "sample_index": 0,
+          "scenario_index": 13,
+          "source_scenario_index": 23,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 13,
+      "source_scenario_index": 23,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.983097493648529,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.44171378016471863,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.9685125350952148
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.9720430374145508
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.976956844329834
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.9836335778236389
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.969012975692749
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9664173126220703
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9578070640563965
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.961360514163971
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9560510516166687
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9528196454048157
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9456101655960083
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9485278129577637
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9525715112686157
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.950305700302124
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9769154787063599
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9800572395324707
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9854034781455994
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.983097493648529
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.983097493648529,
+          "final_score": 0.983097493648529,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_025.target_000.mp4",
+          "sample_index": 0,
+          "scenario_index": 15,
+          "source_scenario_index": 25,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 15,
+      "source_scenario_index": 25,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8399081230163574,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.49451515078544617,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.7547645568847656
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.7686588168144226
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.789766788482666
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.828057050704956
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8293341398239136
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8325366973876953
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.8334602117538452
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8346509337425232
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8339004516601562
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8350469470024109
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8343825936317444
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8326140642166138
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8364225625991821
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.837201714515686
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8326488733291626
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8358040452003479
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.839224100112915
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8399081230163574
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8399081230163574,
+          "final_score": 0.8399081230163574,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_048.target_000.mp4",
+          "sample_index": 0,
+          "scenario_index": 38,
+          "source_scenario_index": 48,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 38,
+      "source_scenario_index": 48,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8699164390563965,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.591124415397644,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.834321141242981
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8342850804328918
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8407678008079529
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8444098234176636
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8379942774772644
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8385592699050903
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.8415570855140686
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8406538963317871
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8410052061080933
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8413398861885071
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8535208702087402
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8561760187149048
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.861204206943512
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8596121668815613
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8661996126174927
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8688492774963379
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.874661922454834
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8699164390563965
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8699164390563965,
+          "final_score": 0.8699164390563965,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_058.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 48,
+          "source_scenario_index": 58,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 48,
+      "source_scenario_index": 58,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8199006915092468,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 1.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.710507333278656
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.7903349995613098
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.7310523986816406
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.7975661158561707
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.7832310795783997
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.7047308087348938
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.7641823887825012
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.7962354421615601
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.7812417149543762
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.7586847543716431
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8033068180084229
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8176789283752441
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.814210832118988
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8175949454307556
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8183152079582214
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.817794919013977
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8187422156333923
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8199006915092468
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8199006915092468,
+          "final_score": 0.8199006915092468,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_063.target_013.mp4",
+          "sample_index": 0,
+          "scenario_index": 53,
+          "source_scenario_index": 63,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 53,
+      "source_scenario_index": 63,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8206973075866699,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 1.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.8210605382919312
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.7902278304100037
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8156558275222778
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8141042590141296
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.7584431767463684
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.7386918663978577
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.7502930760383606
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.7277095913887024
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.6866443157196045
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.6884549856185913
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.7288694381713867
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.7716251611709595
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.7451363205909729
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.7835550308227539
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8123226165771484
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8210639953613281
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8209543228149414
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8206973075866699
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8206973075866699,
+          "final_score": 0.8206973075866699,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_065.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 55,
+          "source_scenario_index": 65,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 55,
+      "source_scenario_index": 65,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.6847360134124756,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.9999999403953552,
+                "max": 0.9999999403953552,
+                "mean": 0.6044179201126099,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.6374102234840393
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.6837306618690491
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.6809374094009399
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.6852884292602539
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.6838041543960571
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.6800065040588379
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.6791167855262756
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.6816887855529785
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.681764543056488
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.6735891103744507
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.6786159873008728
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.6711593270301819
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.6545841097831726
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.689109206199646
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.6848991513252258
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.6849973201751709
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.6847559213638306
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.6847360134124756
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.6847360134124756,
+          "final_score": 0.6847360134124756,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_070.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 60,
+          "source_scenario_index": 70,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 60,
+      "source_scenario_index": 70,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9292382001876831,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.9999999403953552,
+                "max": 0.9999999403953552,
+                "mean": 0.9890109300613403,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.9037705659866333
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.9331019520759583
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.9106868505477905
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.9369223713874817
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.9320749044418335
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9339045882225037
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9315616488456726
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9272681474685669
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9265927076339722
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9315919280052185
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9265192747116089
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9267674088478088
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9284945130348206
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9266119003295898
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9280267953872681
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9290931224822998
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9294466972351074
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9292382001876831
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9292382001876831,
+          "final_score": 0.9292382001876831,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_073.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 63,
+          "source_scenario_index": 73,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 63,
+      "source_scenario_index": 73,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8242838978767395,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.7582440972328186,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.8095430135726929
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8106769323348999
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8143611550331116
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8159282207489014
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8165935277938843
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.815269410610199
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.8154271841049194
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8128299117088318
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8074843883514404
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8050713539123535
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.805087685585022
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8135411739349365
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8159680962562561
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.81480473279953
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8161464929580688
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8204549551010132
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.823483407497406
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8242838978767395
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8242838978767395,
+          "final_score": 0.8242838978767395,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_077.target_002.mp4",
+          "sample_index": 0,
+          "scenario_index": 67,
+          "source_scenario_index": 77,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 67,
+      "source_scenario_index": 77,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.996241569519043,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.5070098042488098,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.8436349034309387
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8436188697814941
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8678920269012451
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8807370662689209
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8975673317909241
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9157964587211609
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9334839582443237
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9494348168373108
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9490363597869873
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9537727236747742
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9571456909179688
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9553219079971313
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9596530795097351
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9480441808700562
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.957157552242279
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9796516299247742
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9901987910270691
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.996241569519043
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.996241569519043,
+          "final_score": 0.996241569519043,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_081.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 71,
+          "source_scenario_index": 81,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 71,
+      "source_scenario_index": 81,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9506699442863464,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.2897348403930664,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.9434285163879395
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.9453901052474976
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.9438642263412476
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.9343456029891968
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.9300541877746582
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9164314270019531
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9031314849853516
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9341666102409363
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9073039293289185
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9291170239448547
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9339151382446289
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9350283145904541
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9332472681999207
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9303578734397888
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9307193756103516
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9291254281997681
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9315862655639648
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9506699442863464
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9506699442863464,
+          "final_score": 0.9506699442863464,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_086.target_000.mp4",
+          "sample_index": 0,
+          "scenario_index": 76,
+          "source_scenario_index": 86,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 76,
+      "source_scenario_index": 86,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9941726922988892,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.055119514465332,
+                "mean": 0.43188735842704773,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.8496970534324646
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8763538002967834
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8786009550094604
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8809705376625061
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8904620409011841
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9031340479850769
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9124919176101685
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9206699132919312
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9320706725120544
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9402119517326355
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9412500858306885
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9484039545059204
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9498288631439209
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9603356719017029
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9784277081489563
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9840396642684937
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9954559206962585
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9941726922988892
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9941726922988892,
+          "final_score": 0.9941726922988892,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_088.target_000.mp4",
+          "sample_index": 0,
+          "scenario_index": 78,
+          "source_scenario_index": 88,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 78,
+      "source_scenario_index": 88,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.984220564365387,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.7937440872192383,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.8565330505371094
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8541396260261536
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.8409753441810608
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8616040349006653
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8711397051811218
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8909103274345398
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.882591962814331
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8908065557479858
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8971304893493652
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9044249653816223
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9198315739631653
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9297611713409424
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9373947381973267
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9524330496788025
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9539875984191895
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9707261323928833
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9837613105773926
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.984220564365387
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.984220564365387,
+          "final_score": 0.984220564365387,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_090.target_009.mp4",
+          "sample_index": 0,
+          "scenario_index": 80,
+          "source_scenario_index": 90,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 80,
+      "source_scenario_index": 90,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8530290126800537,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 1.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.7274672985076904
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.7837647795677185
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.7108762860298157
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.7515514492988586
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.7866802215576172
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.7177897095680237
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.693838894367218
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.7460479736328125
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.7734683156013489
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8378487825393677
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.8015297651290894
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.821742594242096
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8504493236541748
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8419765830039978
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.8333646655082703
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8512433767318726
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8527430295944214
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8530290126800537
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8530290126800537,
+          "final_score": 0.8530290126800537,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_097.target_012.mp4",
+          "sample_index": 0,
+          "scenario_index": 87,
+          "source_scenario_index": 97,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 87,
+      "source_scenario_index": 97,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.8303927183151245,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.4285714328289032,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.6786140203475952
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.7556939721107483
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.7548502087593079
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8230825066566467
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.8260661363601685
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.8277055621147156
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.8268466591835022
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.8217073082923889
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.8284308314323425
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.8351451754570007
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.82746821641922
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.8208099603652954
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.8280532956123352
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.8278126120567322
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.830221951007843
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.8280901908874512
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.8305904269218445
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.8303927183151245
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.8303927183151245,
+          "final_score": 0.8303927183151245,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_100.target_006.mp4",
+          "sample_index": 0,
+          "scenario_index": 90,
+          "source_scenario_index": 100,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 90,
+      "source_scenario_index": 100,
+      "start_t": 0
+    },
+    {
+      "best_sample_index": 0,
+      "best_score": 0.9829976558685303,
+      "metric_names": [
+        "overlap",
+        "offroad",
+        "sdc_progression"
+      ],
+      "metric_summary": {
+        "offroad": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "overlap": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        },
+        "sdc_progression": {
+          "per_scenario_sample": [
+            [
+              {
+                "final": 1.0,
+                "max": 1.0,
+                "mean": 0.7414519190788269,
+                "valid_steps": 91
+              }
+            ]
+          ]
+        }
+      },
+      "original_videos": [],
+      "planner_replan_debug": [
+        {
+          "best_score_b": [
+            0.81809401512146
+          ],
+          "step_offset": 0
+        },
+        {
+          "best_score_b": [
+            0.8259686827659607
+          ],
+          "step_offset": 5
+        },
+        {
+          "best_score_b": [
+            0.87555330991745
+          ],
+          "step_offset": 10
+        },
+        {
+          "best_score_b": [
+            0.8873760104179382
+          ],
+          "step_offset": 15
+        },
+        {
+          "best_score_b": [
+            0.9081765413284302
+          ],
+          "step_offset": 20
+        },
+        {
+          "best_score_b": [
+            0.9215907454490662
+          ],
+          "step_offset": 25
+        },
+        {
+          "best_score_b": [
+            0.9321979284286499
+          ],
+          "step_offset": 30
+        },
+        {
+          "best_score_b": [
+            0.9420560598373413
+          ],
+          "step_offset": 35
+        },
+        {
+          "best_score_b": [
+            0.9415096044540405
+          ],
+          "step_offset": 40
+        },
+        {
+          "best_score_b": [
+            0.9531426429748535
+          ],
+          "step_offset": 45
+        },
+        {
+          "best_score_b": [
+            0.9593244194984436
+          ],
+          "step_offset": 50
+        },
+        {
+          "best_score_b": [
+            0.9520310163497925
+          ],
+          "step_offset": 55
+        },
+        {
+          "best_score_b": [
+            0.9590065479278564
+          ],
+          "step_offset": 60
+        },
+        {
+          "best_score_b": [
+            0.9717522859573364
+          ],
+          "step_offset": 65
+        },
+        {
+          "best_score_b": [
+            0.9798879623413086
+          ],
+          "step_offset": 70
+        },
+        {
+          "best_score_b": [
+            0.9837134480476379
+          ],
+          "step_offset": 75
+        },
+        {
+          "best_score_b": [
+            0.9831069707870483
+          ],
+          "step_offset": 80
+        },
+        {
+          "best_score_b": [
+            0.9829976558685303
+          ],
+          "step_offset": 85
+        }
+      ],
+      "predict_horizon_world_steps": 91,
+      "predicted_videos": [
+        {
+          "batch_index": 0,
+          "best_sample_index": 0,
+          "best_score": 0.9829976558685303,
+          "final_score": 0.9829976558685303,
+          "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_108.target_008.mp4",
+          "sample_index": 0,
+          "scenario_index": 98,
+          "source_scenario_index": 108,
+          "start_t": 0
+        }
+      ],
+      "scenario_index": 98,
+      "source_scenario_index": 108,
+      "start_t": 0
+    }
+  ],
+  "metadata_path": null,
+  "num_episodes_processed": 20,
+  "num_episodes_requested": 100,
+  "num_iterations": 3,
+  "original_videos": [],
+  "population_size": 64,
+  "predicted_videos": [
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8517985939979553,
+      "final_score": 0.8517985939979553,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_012.target_007.mp4",
+      "sample_index": 0,
+      "scenario_index": 2,
+      "source_scenario_index": 12,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8499169945716858,
+      "final_score": 0.8499169945716858,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_013.target_005.mp4",
+      "sample_index": 0,
+      "scenario_index": 3,
+      "source_scenario_index": 13,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9896160364151001,
+      "final_score": 0.9896160364151001,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_014.target_007.mp4",
+      "sample_index": 0,
+      "scenario_index": 4,
+      "source_scenario_index": 14,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.7493067979812622,
+      "final_score": 0.7493067979812622,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_018.target_007.mp4",
+      "sample_index": 0,
+      "scenario_index": 8,
+      "source_scenario_index": 18,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9869656562805176,
+      "final_score": 0.9869656562805176,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_023.target_007.mp4",
+      "sample_index": 0,
+      "scenario_index": 13,
+      "source_scenario_index": 23,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.983097493648529,
+      "final_score": 0.983097493648529,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_025.target_000.mp4",
+      "sample_index": 0,
+      "scenario_index": 15,
+      "source_scenario_index": 25,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8399081230163574,
+      "final_score": 0.8399081230163574,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_048.target_000.mp4",
+      "sample_index": 0,
+      "scenario_index": 38,
+      "source_scenario_index": 48,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8699164390563965,
+      "final_score": 0.8699164390563965,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_058.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 48,
+      "source_scenario_index": 58,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8199006915092468,
+      "final_score": 0.8199006915092468,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_063.target_013.mp4",
+      "sample_index": 0,
+      "scenario_index": 53,
+      "source_scenario_index": 63,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8206973075866699,
+      "final_score": 0.8206973075866699,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_065.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 55,
+      "source_scenario_index": 65,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.6847360134124756,
+      "final_score": 0.6847360134124756,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_070.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 60,
+      "source_scenario_index": 70,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9292382001876831,
+      "final_score": 0.9292382001876831,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_073.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 63,
+      "source_scenario_index": 73,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8242838978767395,
+      "final_score": 0.8242838978767395,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_077.target_002.mp4",
+      "sample_index": 0,
+      "scenario_index": 67,
+      "source_scenario_index": 77,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.996241569519043,
+      "final_score": 0.996241569519043,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_081.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 71,
+      "source_scenario_index": 81,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9506699442863464,
+      "final_score": 0.9506699442863464,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_086.target_000.mp4",
+      "sample_index": 0,
+      "scenario_index": 76,
+      "source_scenario_index": 86,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9941726922988892,
+      "final_score": 0.9941726922988892,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_088.target_000.mp4",
+      "sample_index": 0,
+      "scenario_index": 78,
+      "source_scenario_index": 88,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.984220564365387,
+      "final_score": 0.984220564365387,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_090.target_009.mp4",
+      "sample_index": 0,
+      "scenario_index": 80,
+      "source_scenario_index": 90,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8530290126800537,
+      "final_score": 0.8530290126800537,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_097.target_012.mp4",
+      "sample_index": 0,
+      "scenario_index": 87,
+      "source_scenario_index": 97,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.8303927183151245,
+      "final_score": 0.8303927183151245,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_100.target_006.mp4",
+      "sample_index": 0,
+      "scenario_index": 90,
+      "source_scenario_index": 100,
+      "start_t": 0
+    },
+    {
+      "batch_index": 0,
+      "best_sample_index": 0,
+      "best_score": 0.9829976558685303,
+      "final_score": 0.9829976558685303,
+      "path": "test_es_output/predicted_videos/training_tfexample.tfrecord-00100-of-01000.scenario_108.target_008.mp4",
+      "sample_index": 0,
+      "scenario_index": 98,
+      "source_scenario_index": 108,
+      "start_t": 0
+    }
+  ],
+  "render_sample_indices": [
+    0
+  ],
+  "replan_interval_steps": 5,
+  "resample_timesteps": 5,
+  "rollout_sample_indices": [
+    0
+  ],
+  "scenario_indices": [
+    2,
+    3,
+    4,
+    8,
+    13,
+    15,
+    38,
+    48,
+    53,
+    55,
+    60,
+    63,
+    67,
+    71,
+    76,
+    78,
+    80,
+    87,
+    90,
+    98
+  ],
+  "tfrecord_path": "/data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/training/training_tfexample.tfrecord-00100-of-01000"
+}

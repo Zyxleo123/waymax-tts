@@ -6,7 +6,7 @@ from typing import Mapping
 import jax
 from jax import numpy as jnp
 
-from metrics.common import speed, yaw_from_states
+from metrics.common import ProposalContext, speed, yaw_from_states
 from metrics.helpers import World
 
 
@@ -27,6 +27,7 @@ def _threshold(config: Mapping[str, float], key: str, default: float) -> float:
 def compute_comfort_metric(
 		trajectories: jax.Array,
 		world: World,
+		proposal_ctx: ProposalContext | None = None,
 		comfort_config: Mapping[str, float] | None = None,
 ) -> ComfortMetricResult:
 	config = dict(comfort_config or {})
@@ -36,8 +37,12 @@ def compute_comfort_metric(
 	max_yaw_rate = _threshold(config, "max_yaw_rate", 1.0)
 
 	dt = jnp.asarray(world.prediction_dt_s, dtype=jnp.float32)
-	speeds = speed(trajectories, world=world, dt_s=world.prediction_dt_s)
-	yaw = yaw_from_states(trajectories, world=world)
+	if proposal_ctx is None:
+		speeds = speed(trajectories, world=world, dt_s=world.prediction_dt_s)
+		yaw = yaw_from_states(trajectories, world=world)
+	else:
+		speeds = proposal_ctx.speed
+		yaw = proposal_ctx.yaw
 
 	longitudinal_accel = jnp.concatenate(
 			[(speeds[:, 1:2] - speeds[:, :1]) / dt, (speeds[:, 1:] - speeds[:, :-1]) / dt],

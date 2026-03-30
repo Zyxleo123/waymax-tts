@@ -39,3 +39,5 @@ wandb/
 
 # videos
 videos/
+*.mp4
+*.npz

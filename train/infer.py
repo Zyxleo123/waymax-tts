@@ -68,7 +68,7 @@ _REQUIRED_META_KEYS = (
 )
 
 
-_DEFAULT_METRIC_NAMES = ("overlap", "offroad", "sdc_progression")
+_DEFAULT_METRIC_NAMES = ("overlap", "offroad")
 
 
 def _load_checkpoint_metadata(

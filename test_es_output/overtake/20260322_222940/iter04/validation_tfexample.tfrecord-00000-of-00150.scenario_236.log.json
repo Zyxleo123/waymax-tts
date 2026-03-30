@@ -1,0 +1,12 @@
+{
+  "command": "Continue navigating the intersection and complete the left turn while maintaining your lane. Once you have cleared the intersection and are on a straight road, accelerate to proceed with overtaking vehicle 0 if it is ahead of you.",
+  "ego_idx": 4,
+  "offroad": false,
+  "overlap": false,
+  "scenario_idx": 236,
+  "target_idx": 0,
+  "task": "overtake",
+  "task_result": false,
+  "tfrecord": "/data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/validation/validation_tfexample.tfrecord-00000-of-00150",
+  "video_path": "test_es_output/overtake/20260322_222940/iter04/validation_tfexample.tfrecord-00000-of-00150.scenario_236.mp4"
+}

@@ -113,6 +113,21 @@ def _apply_ego_override_to_state_batch(
     return dataclasses.replace(state_batch, log_trajectory=updated_log)
 
 
+def _get_reference_ego_heading_rad(state_batch, batch_idx: int) -> float:
+    """Returns ego heading at first frame (fallback: first valid frame)."""
+    sdc_idx = _get_sdc_index(state_batch, batch_idx)
+    valid = np.asarray(state_batch.log_trajectory.valid[batch_idx, sdc_idx]).astype(bool)
+    if valid.size == 0:
+        return 0.0
+    if valid[0]:
+        t_ref = 0
+    elif valid.any():
+        t_ref = int(np.flatnonzero(valid)[0])
+    else:
+        t_ref = 0
+    return float(np.asarray(state_batch.log_trajectory.yaw[batch_idx, sdc_idx, t_ref]))
+
+
 def _load_scenario_state_fast(cfg: waymax_config.DatasetConfig, scenario_index: int):
     """Loads one scenario directly from TFRecord by skipping raw records first."""
     raw_ds = tf.data.TFRecordDataset([cfg.path]).skip(int(scenario_index)).take(1)
@@ -233,6 +248,7 @@ def render_video_from_tfrecord(
 def render_videos_batched(
     *,
     tfrecord_scenarios: list[tuple[str, int]],
+    target_vehicles: list[int] | None = None,
     output_dir: str,
     fps: int = 10,
     num_frames: int = 91,
@@ -248,6 +264,7 @@ def render_videos_batched(
     back_x: float = 30.0,
     front_y: float = 30.0,
     back_y: float = 30.0,
+    align_ego_heading_up: bool = False,
 ) -> list[Path]:
     """
     Render multiple videos for arbitrary (tfrecord, scenario_index) pairs efficiently.
@@ -257,6 +274,8 @@ def render_videos_batched(
     """
     if not tfrecord_scenarios:
         return []
+    if target_vehicles[0] is None:
+        target_vehicles = None
 
     overrides = _normalize_override_lists(
         len(tfrecord_scenarios), ego_start_times, ego_trajectories
@@ -314,9 +333,14 @@ def render_videos_batched(
                 request_use_log_traj = True
 
             output_path = output_root / (
-                f"{Path(tfrecord).name}.scenario_{scenario_index:03d}.req_{req_idx:03d}.mp4"
+                f"{Path(tfrecord).name}.scenario_{scenario_index:03d}.mp4"
             )
             frames: list[np.ndarray] = []
+            world_rotation_rad = 0.0
+            if bool(align_ego_heading_up):
+                heading0 = _get_reference_ego_heading_rad(state_for_render, batch_idx)
+                world_rotation_rad = float(np.pi / 2.0 - heading0)
+            target_vehicle = target_vehicles[req_idx] if target_vehicles is not None else None
             for t in range(steps):
                 state_t = dataclasses.replace(
                     state_for_render, timestep=np.full((batch_size,), t, dtype=np.int32)
@@ -326,6 +350,8 @@ def render_videos_batched(
                     use_log_traj=request_use_log_traj,
                     viz_config=viz_config,
                     batch_idx=batch_idx,
+                    target_vehicle=target_vehicle,
+                    world_rotation_rad=world_rotation_rad,
                 )
                 frame = cv2.resize(
                     frame, (int(width), int(height)), interpolation=cv2.INTER_AREA

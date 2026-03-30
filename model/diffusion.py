@@ -326,7 +326,7 @@ class GaussianDiffusion(nnx.Module):
         key_q, key_steps = jax.random.split(rng)
         q_noise = jax.random.normal(key_q, proposals.shape, dtype=jnp.float32)
         t0 = jnp.full((batch_size,), n_timesteps - 1, dtype=jnp.int32)
-        x = self.q_sample(proposals, t0, noise=q_noise)
+        x = self.q_sample(proposals, t0, noise=2 * q_noise)
 
         def body(i: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
             x_curr, key = carry

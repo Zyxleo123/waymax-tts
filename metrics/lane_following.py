@@ -5,7 +5,7 @@ from typing import Optional
 import jax
 from jax import numpy as jnp
 
-from metrics.common import headings_from_xy, positions_xy
+from metrics.common import ProposalContext, headings_from_xy, positions_xy
 from metrics.helpers import World
 from metrics.progress import get_reference_centerline
 
@@ -19,6 +19,7 @@ def _estimate_heading(polyline_xy: jax.Array) -> jax.Array:
 def compute_lane_following_metric(
 		trajectories: jax.Array,
 		world: World,
+		proposal_ctx: ProposalContext | None = None,
 		max_lane_deviation: float = 10.0,
 		reference_centerline_xy: Optional[jax.Array] = None,
 		pull_over: bool = False,
@@ -28,11 +29,13 @@ def compute_lane_following_metric(
 			if reference_centerline_xy is None
 			else jnp.asarray(reference_centerline_xy, dtype=jnp.float32)
 	)
-	xy = positions_xy(trajectories)
+	xy = positions_xy(trajectories) if proposal_ctx is None else proposal_ctx.xy
 	if int(centerline_xy.shape[0]) < 2:
 		return jnp.ones((xy.shape[0],), dtype=jnp.float32)
 
-	trajectory_heading = headings_from_xy(xy)
+	trajectory_heading = (
+		headings_from_xy(xy) if proposal_ctx is None else proposal_ctx.trajectory_heading
+	)
 	centerline_heading = _estimate_heading(centerline_xy)
 	xy_loss = jnp.linalg.norm(xy[:, None, :, :] - centerline_xy[None, :, None, :], axis=-1)
 	closest_idx = jnp.argmin(xy_loss, axis=1)

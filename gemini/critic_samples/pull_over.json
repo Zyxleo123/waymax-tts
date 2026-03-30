@@ -1,0 +1,14 @@
+[
+    {
+        "reason": "You must safely move onto the roadside before pulling over.",
+        "command": "Move onto the roadside to stop the car."
+    },
+    {
+        "reason": "Since the vehicle is currently on the left side of the road, you must first move to the rightmost lane before pulling over.",
+        "command": "Change lanes to the right until you reach the rightmost lane, and then move onto the roadside to stop the car."
+    },
+    {
+        "reason": "You need to change to the right lane before pulling over, but since car 5 is quickly approaching from behind, you must let car 5 pass first, then change to the right lane and pull over.",
+        "command": "If car 5 is 10 meters ahead of you, change lanes to the right and pull over onto the roadside to stop the car."
+    }
+]

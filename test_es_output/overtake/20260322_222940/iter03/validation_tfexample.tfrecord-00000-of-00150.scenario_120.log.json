@@ -1,0 +1,12 @@
+{
+  "command": "Change to the left lane, increase speed to accelerate past the vehicles ahead, and once you have safely overtaken vehicle 9, return to your original lane.",
+  "ego_idx": 6,
+  "offroad": false,
+  "overlap": false,
+  "scenario_idx": 120,
+  "target_idx": 9,
+  "task": "overtake",
+  "task_result": false,
+  "tfrecord": "/data/datasets/waymo/waymo-open-dataset-v1.3.1/tf_example/validation/validation_tfexample.tfrecord-00000-of-00150",
+  "video_path": "test_es_output/overtake/20260322_222940/iter03/validation_tfexample.tfrecord-00000-of-00150.scenario_120.mp4"
+}

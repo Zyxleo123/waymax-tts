@@ -3,13 +3,17 @@ from __future__ import annotations
 import jax
 from jax import numpy as jnp
 
-from metrics.common import positions_xy, proposal_ego_area_masks, yaw_from_states
+from metrics.common import ProposalContext, positions_xy, proposal_ego_area_masks, yaw_from_states
 from metrics.helpers import World
 
 
-def compute_drivable_area_metric(trajectories: jax.Array, world: World) -> jax.Array:
+def compute_drivable_area_metric(
+		trajectories: jax.Array,
+		world: World,
+		proposal_ctx: ProposalContext | None = None,
+) -> jax.Array:
 	"""Returns a drivable-area compliance score per proposal."""
-	_, non_drivable_area = proposal_ego_area_masks(world, trajectories)
+	non_drivable_area = proposal_ego_area_masks(world, trajectories, proposal_ctx=proposal_ctx)
 	off_road_mask = jnp.any(non_drivable_area, axis=-1)
 	all_offroad = jnp.all(off_road_mask)
 	return jnp.where(all_offroad, 1.0, jnp.where(off_road_mask, 0.0, 1.0)).astype(jnp.float32)
@@ -18,6 +22,7 @@ def compute_drivable_area_metric(trajectories: jax.Array, world: World) -> jax.A
 def compute_driving_direction_metric(
 		trajectories: jax.Array,
 		world: World,
+		proposal_ctx: ProposalContext | None = None,
 		driving_direction_compliance_threshold: float = 2.0,
 		driving_direction_violation_threshold: float = 6.0,
 ) -> jax.Array:
@@ -31,9 +36,13 @@ def compute_driving_direction_metric(
 	if not world.lane_nodes:
 		return jnp.ones((positions_xy(trajectories).shape[0],), dtype=jnp.float32)
 
-	xy = positions_xy(trajectories)
-	yaw = yaw_from_states(trajectories, world=world)
-	heading_xy = jnp.stack([jnp.cos(yaw), jnp.sin(yaw)], axis=-1).astype(jnp.float32)
+	if proposal_ctx is None:
+		xy = positions_xy(trajectories)
+		yaw = yaw_from_states(trajectories, world=world)
+		heading_xy = jnp.stack([jnp.cos(yaw), jnp.sin(yaw)], axis=-1).astype(jnp.float32)
+	else:
+		xy = proposal_ctx.xy
+		heading_xy = proposal_ctx.heading_xy
 
 	node_positions = jnp.stack([node.position for node in world.lane_nodes], axis=0).astype(jnp.float32)
 	node_dirs = jnp.stack([node.direction for node in world.lane_nodes], axis=0).astype(jnp.float32)

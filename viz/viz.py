@@ -51,6 +51,66 @@ road_type_dict = {
 
 overlap_fn = jax.jit(geometry.compute_pairwise_overlaps)
 
+
+def _rotate_xy_array(xy: np.ndarray, angle_rad: float) -> np.ndarray:
+  cos_a = float(np.cos(angle_rad))
+  sin_a = float(np.sin(angle_rad))
+  x = np.asarray(xy)[..., 0]
+  y = np.asarray(xy)[..., 1]
+  return np.stack((cos_a * x - sin_a * y, sin_a * x + cos_a * y), axis=-1)
+
+
+def _rotate_xy_fields(x: np.ndarray, y: np.ndarray, angle_rad: float) -> tuple[np.ndarray, np.ndarray]:
+  cos_a = float(np.cos(angle_rad))
+  sin_a = float(np.sin(angle_rad))
+  x_arr = np.asarray(x)
+  y_arr = np.asarray(y)
+  return cos_a * x_arr - sin_a * y_arr, sin_a * x_arr + cos_a * y_arr
+
+
+def _rotate_trajectory(traj: datatypes.Trajectory, angle_rad: float) -> datatypes.Trajectory:
+  x, y = _rotate_xy_fields(np.asarray(traj.x), np.asarray(traj.y), angle_rad)
+  vel_x, vel_y = _rotate_xy_fields(np.asarray(traj.vel_x), np.asarray(traj.vel_y), angle_rad)
+  yaw = np.asarray(traj.yaw) + float(angle_rad)
+  return traj.replace(x=x, y=y, yaw=yaw, vel_x=vel_x, vel_y=vel_y)
+
+
+def _rotate_roadgraph_points(
+    rg_pts: datatypes.RoadgraphPoints, angle_rad: float
+) -> datatypes.RoadgraphPoints:
+  replace_kwargs: dict[str, np.ndarray] = {}
+
+  if hasattr(rg_pts, 'x') and hasattr(rg_pts, 'y'):
+    x_rot, y_rot = _rotate_xy_fields(np.asarray(rg_pts.x), np.asarray(rg_pts.y), angle_rad)
+    replace_kwargs['x'] = x_rot
+    replace_kwargs['y'] = y_rot
+  elif hasattr(rg_pts, 'xy'):
+    xy_rot = _rotate_xy_array(np.asarray(rg_pts.xy), angle_rad)
+    replace_kwargs['xy'] = xy_rot
+  else:
+    return rg_pts
+
+  if hasattr(rg_pts, 'dir_x') and hasattr(rg_pts, 'dir_y'):
+    dir_x_rot, dir_y_rot = _rotate_xy_fields(
+        np.asarray(rg_pts.dir_x), np.asarray(rg_pts.dir_y), angle_rad
+    )
+    replace_kwargs['dir_x'] = dir_x_rot
+    replace_kwargs['dir_y'] = dir_y_rot
+
+  return rg_pts.replace(**replace_kwargs)
+
+
+def _rotate_traffic_lights(
+    tls: datatypes.TrafficLights, angle_rad: float
+) -> datatypes.TrafficLights:
+  if hasattr(tls, 'x') and hasattr(tls, 'y'):
+    x_rot, y_rot = _rotate_xy_fields(np.asarray(tls.x), np.asarray(tls.y), angle_rad)
+    return tls.replace(x=x_rot, y=y_rot)
+  if hasattr(tls, 'xy'):
+    xy_rot = _rotate_xy_array(np.asarray(tls.xy), angle_rad)
+    return tls.replace(xy=xy_rot)
+  return tls
+
 def _plot_bounding_boxes(
     ax: matplotlib.axes.Axes,
     traj_5dof: np.ndarray,
@@ -293,6 +353,8 @@ def plot_simulator_state(
     viz_config: Optional[dict[str, Any]] = None,
     batch_idx: int = -1,
     highlight_obj: waymax_config.ObjectType = waymax_config.ObjectType.SDC,
+    target_vehicle: Optional[int] = None,
+  world_rotation_rad: float = 0.0,
 ) -> np.ndarray:
   """Plots np array image for SimulatorState.
 
@@ -304,6 +366,7 @@ def plot_simulator_state(
     batch_idx: optional batch index.
     highlight_obj: Represents the type of objects that will be highlighted with
       `COLOR_DICT['controlled']` 
+    target_vehicle: Optional index of the vehicle to target.
 
   Returns:
     np image.
@@ -324,18 +387,32 @@ def plot_simulator_state(
 
   # 1. Plots trajectory.
   traj = state.log_trajectory if use_log_traj else state.sim_trajectory
+  roadgraph_points = state.roadgraph_points
+  traffic_lights = state.log_traffic_light
+  if abs(float(world_rotation_rad)) > 1e-12:
+    traj = _rotate_trajectory(traj, float(world_rotation_rad))
+    roadgraph_points = _rotate_roadgraph_points(
+        roadgraph_points, float(world_rotation_rad)
+    )
+    traffic_lights = _rotate_traffic_lights(
+        traffic_lights, float(world_rotation_rad)
+    )
+
   indices = np.arange(traj.num_objects) if viz_config.show_agent_id else None
   is_controlled = datatypes.get_control_mask(
       state.object_metadata, highlight_obj
   )
+  is_adv = np.zeros((traj.num_objects,), dtype=bool)
+  if target_vehicle is not None and 0 <= target_vehicle < traj.num_objects:
+    is_adv[target_vehicle] = True
   plot_trajectory(
-      ax, traj, is_controlled, time_idx=state.timestep, indices=indices
+      ax, traj, is_controlled, time_idx=state.timestep, indices=indices, is_adv=is_adv
   )  # pytype: disable=wrong-arg-types  # jax-ndarray
 
   # 2. Plots road graph elements.
-  plot_roadgraph_points(ax, state.roadgraph_points, verbose=False)
+  plot_roadgraph_points(ax, roadgraph_points, verbose=False)
   plot_traffic_light_signals_as_points(
-      ax, state.log_traffic_light, state.timestep, verbose=False
+      ax, traffic_lights, state.timestep, verbose=False
   )
 
   # 3. Gets np img, centered on selected agent's current location.

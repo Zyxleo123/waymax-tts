@@ -1,0 +1,18 @@
+[
+    {
+        "reason": "You should change lanes to overtake vehicle 3 and then return to the original lane.",
+        "code": "done = self.follow_lane(self.left_lane)\nwhile not done():\n    yield\nself.increase_speed(1.5)\nwhile not self.is_ahead_of(vehicle_idx=3):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield"
+    },
+    {
+        "reason": "Since there are many vehicles in the left lane, you should change to the right lane and overtake vehicle 7.",
+        "code": "done = self.follow_lane(self.right_lane)\nwhile not done():\n    yield\nself.increase_speed(1.5)\nwhile not self.is_ahead_of(vehicle_idx=7):\n    yield\ndone = self.follow_lane(self.left_lane)\nwhile not done():\n    yield"
+    },
+    {
+        "reason": "There are many vehicles in the right lane, and vehicle 2 is approaching quickly from behind in the left lane. Therefore, you should maintain your current lane until vehicle 2 passes, and once it has passed, change to the left lane to overtake vehicle 1.",
+        "code": "done = self.follow_lane(self.current_lane)\nwhile not self.is_behind_of(vehicle_idx=2):\n    yield\ndone = self.follow_lane(self.left_lane)\nwhile not done():\n    yield\nself.increase_speed(1.5)\nwhile not self.is_ahead_of(vehicle_idx=1):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield"
+    },
+    {
+        "reason": "Vehicle 2 is driving side by side with vehicle 9 at a low speed, so you should change lanes twice to the left and overtake vehicle 9.",
+        "code": "done = self.follow_lane(self.left_lane)\nwhile not done():\n    yield\ndone = self.follow_lane(self.left_lane)\nwhile not done()::\n    yield\nself.increase_speed(1.5)\nwhile not self.is_ahead_of(vehicle_idx=2):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield\nwhile not self.is_ahead_of(vehicle_idx=9):\n    yield\ndone = self.follow_lane(self.right_lane)\nwhile not done():\n    yield"
+    }
+]
