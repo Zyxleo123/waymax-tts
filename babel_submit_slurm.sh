@@ -8,7 +8,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 LR="$1"
-PREFIX="${2:-finetuning_overtake}"
+PREFIX="${2:-waymax_diffusion}"
 
 # Make LR filename/job-safe and easy to scan.
 LR_TAG="$(echo "${LR}" | sed -E 's/\./p/g; s/-/m/g; s/\+//g')"

@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --epochs 1000 \
   --steps_per_epoch 1000 \
   --save_every 10 \
-  --save_dir /data/user_data/mineuih/checkpoints \
+  --save_dir /data/user_data/mineuih/waymax_rs/checkpoints \ \
   --warmup_steps 0 \
   --lr 1e-6 \
   --ema_update_every 1 \
@@ -38,4 +38,4 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --wandb_name finetuning_overtake-1e-5 \
   --wandb_mode online \
   --jax_compilation_cache_dir .jax_compilation_cache \
-  --resume_path /data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0420
+  # --resume_path /data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0420
