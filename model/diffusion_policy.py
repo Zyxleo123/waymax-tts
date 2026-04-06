@@ -140,12 +140,15 @@ class DiffusionPolicy(nnx.Module):
         cond = jnp.concatenate([ego_feature, other_feature, map_features, traffic_light_features], axis=-1)
         return self.cond_projection(cond, deterministic=True)
 
-    def _sample_from_condition_impl(self, cond: jnp.ndarray, rng: jax.Array) -> jnp.ndarray:
+    def _sample_from_condition_impl(self, cond: jnp.ndarray, rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = cond.shape[0]
         pred = self.diffusion.sample(
             shape=(batch_size, self.target_dim, self.predict_horizon),
             cond=cond,
             rng=rng,
+            eta=eta,
+            sampling_temp=sampling_temp,
+            temp_mode=temp_mode,
         )
         return jnp.transpose(pred, (0, 2, 1))
 
@@ -153,9 +156,9 @@ class DiffusionPolicy(nnx.Module):
         return self.diffusion.loss(jnp.transpose(target_btd, (0, 2, 1)), cond=cond, rng=rng)
 
     def _resample_from_condition_impl(
-        self, cond: jnp.ndarray, proposals_btd: jnp.ndarray, n_timesteps: int, rng: jax.Array
+        self, cond: jnp.ndarray, proposals_btd: jnp.ndarray, n_timesteps: int, rng: jax.Array, noise_scale: float = 1.0, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform"
     ) -> jnp.ndarray:
-        x = self.diffusion.resample(jnp.transpose(proposals_btd, (0, 2, 1)), cond, n_timesteps=n_timesteps, rng=rng)
+        x = self.diffusion.resample(jnp.transpose(proposals_btd, (0, 2, 1)), cond, n_timesteps=n_timesteps, rng=rng, noise_scale=noise_scale, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
         return jnp.transpose(x, (0, 2, 1))
 
     def compute_condition(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray]) -> jnp.ndarray:
@@ -164,9 +167,9 @@ class DiffusionPolicy(nnx.Module):
     def input_features_projection(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray]) -> jnp.ndarray:
         return self.compute_condition(input_features)
 
-    def sample_from_condition(self, cond: jnp.ndarray, *, rng: jax.Array, data_parallel: bool = False) -> jnp.ndarray:
+    def sample_from_condition(self, cond: jnp.ndarray, *, rng: jax.Array, data_parallel: bool = False, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         cond_in = self.shard_condition(cond) if data_parallel else cond
-        return self._sample_from_condition_impl(cond_in, rng)
+        return self._sample_from_condition_impl(cond_in, rng, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
 
     def loss_from_condition(
         self,
@@ -191,14 +194,18 @@ class DiffusionPolicy(nnx.Module):
         *,
         rng: jax.Array,
         data_parallel: bool = False,
+        noise_scale: float = 1.0,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
     ) -> jnp.ndarray:
         if data_parallel:
             cond = self.shard_condition(cond)
             proposals_btd = self.shard_trajectory(proposals_btd)
-        return self._resample_from_condition_impl(cond, proposals_btd, n_timesteps, rng)
+        return self._resample_from_condition_impl(cond, proposals_btd, n_timesteps, rng, noise_scale=noise_scale, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
 
-    def forward(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray], rng: jax.Array) -> jnp.ndarray:
-        return self.sample(input_features, rng=rng)
+    def forward(self, input_features: PolicyFeatures | Mapping[str, jnp.ndarray], rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
+        return self.sample(input_features, rng=rng, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
 
     def sample(
         self,
@@ -206,9 +213,12 @@ class DiffusionPolicy(nnx.Module):
         *,
         rng: jax.Array,
         data_parallel: bool = False,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
     ) -> jnp.ndarray:
         cond = self.compute_condition(input_features)
-        return self.sample_from_condition(cond, rng=rng, data_parallel=data_parallel)
+        return self.sample_from_condition(cond, rng=rng, data_parallel=data_parallel, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
 
     def loss(
         self,
@@ -232,6 +242,9 @@ class DiffusionPolicy(nnx.Module):
         *,
         rng: jax.Array,
         data_parallel: bool = False,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
     ) -> jnp.ndarray:
         cond = self.compute_condition(input_features)
-        return self.resample_from_condition(cond, proposals, n_timesteps, rng=rng, data_parallel=data_parallel)
+        return self.resample_from_condition(cond, proposals, n_timesteps, rng=rng, data_parallel=data_parallel, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)

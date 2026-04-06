@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:L40S:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 
 source ~/.bashrc
 conda activate waymax_rs
@@ -35,7 +35,7 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --pbar_every 1 \
   --log_jsonl_path ./train_logs.jsonl \
   --wandb_project waymax_rs \
-  --wandb_name waymax_diffusion-${LR} \
+  --wandb_name waymax_diffusion-1e-4 \
   --wandb_mode online \
   --jax_compilation_cache_dir .jax_compilation_cache \
   # --resume_path /data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0420

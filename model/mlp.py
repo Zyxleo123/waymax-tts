@@ -42,9 +42,9 @@ class MLP(nnx.Module):
         self.init_bias = init_bias
         self.activation = _get_activation(activation)
 
-        self.fc_layers = []
-        self.norm_layers = []
-        self.dropout_layers = []
+        fc_layers = []
+        norm_layers = []
+        dropout_layers = []
 
         for i in range(len(fc_dims) - 1):
             in_dim = int(fc_dims[i])
@@ -58,39 +58,26 @@ class MLP(nnx.Module):
             if init_bias is not None and i == len(fc_dims) - 2:
                 dense.bias.value = jnp.full_like(dense.bias.value, init_bias)
 
-            self.fc_layers.append(dense)
+            fc_layers.append(dense)
 
             is_last = i == len(fc_dims) - 2
             if (not is_last) or end_layer_activation:
                 if use_layernorm:
-                    self.norm_layers.append(nnx.LayerNorm(num_features=out_dim, rngs=rngs))
+                    norm_layers.append(nnx.LayerNorm(num_features=out_dim, rngs=rngs))
                 elif use_batchnorm:
-                    self.norm_layers.append(nnx.BatchNorm(num_features=out_dim, rngs=rngs))
+                    norm_layers.append(nnx.BatchNorm(num_features=out_dim, rngs=rngs))
                 else:
-                    self.norm_layers.append(None)
+                    norm_layers.append(None)
 
                 if dropout_p is not None:
-                    self.dropout_layers.append(nnx.Dropout(rate=dropout_p, rngs=rngs))
+                    dropout_layers.append(nnx.Dropout(rate=dropout_p, rngs=rngs))
                 else:
-                    self.dropout_layers.append(None)
-        
-        # NOTE: Wrap python lists of modules in nnx submodules so their params are correctly tracked.
-        self.fc_layers = nnx.Sequential(*self.fc_layers)
-        
-        # We don't strictly need to wrap lists of `None` or mixed types if they aren't param holders, 
-        # but to trace `nnx.LayerNorm` correctly it MUST be part of the module hierarchy.
-        # We can just assign them directly to self, or filter Nones to sequence.
-        # However, because they are parallel to fc_layers, let's keep them as sequences of modules/Nones,
-        # but nnx.Sequential might not like `None`. So we do this:
-        self.norm_layers = {str(j): norm for j, norm in enumerate(self.norm_layers) if norm is not None}
-        self.dropout_layers = {str(j): drop for j, drop in enumerate(self.dropout_layers) if drop is not None}
-        # Wait, flax nnx doesn't trace dicts! We can't use a dict!
-        for j, norm in enumerate(self.norm_layers):
-            if norm is not None:
-                setattr(self, f"norm_layer_{j}", norm)
-        for j, drop in enumerate(self.dropout_layers):
-            if drop is not None:
-                setattr(self, f"dropout_layer_{j}", drop)
+                    dropout_layers.append(None)
+
+        # Register layer containers as NNX modules in a single assignment.
+        self.fc_layers = nnx.List(fc_layers)
+        self.norm_layers = nnx.List(norm_layers)
+        self.dropout_layers = nnx.List(dropout_layers)
 
     def __call__(
         self,
@@ -104,19 +91,19 @@ class MLP(nnx.Module):
         h = x.reshape((-1, x.shape[-1]))
 
         norm_dropout_idx = 0
-        for i, layer in enumerate(self.fc_layers.layers):
+        for i, layer in enumerate(self.fc_layers):
             h = layer(h)
-            is_last = i == len(self.fc_layers.layers) - 1
+            is_last = i == len(self.fc_layers) - 1
 
             if (not is_last) or self.end_layer_activation:
-                norm_layer = getattr(self, f"norm_layer_{norm_dropout_idx}", None)
+                norm_layer = self.norm_layers[norm_dropout_idx]
                 if norm_layer is not None:
                     if self.use_batchnorm:
                         h = norm_layer(h, use_running_average=deterministic)
                     else:
                         h = norm_layer(h)
 
-                dropout_layer = getattr(self, f"dropout_layer_{norm_dropout_idx}", None)
+                dropout_layer = self.dropout_layers[norm_dropout_idx]
                 if dropout_layer is not None:
                     h = dropout_layer(h, deterministic=deterministic)
 

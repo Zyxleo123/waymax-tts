@@ -3,8 +3,14 @@ from __future__ import annotations
 import itertools
 import os
 
-# Deal with https://github.com/waymo-research/waymax/issues/66
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+# Reduce TensorFlow/XLA startup noise and keep TF from competing for GPU memory.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("AUTOGRAPH_VERBOSITY", "0")
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("JAX_LOGGING_LEVEL", "ERROR")
+# Keep this for Waymax compatibility on hosts where TF can still see GPUs.
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 import jax
 import jax.numpy as jnp
@@ -13,10 +19,13 @@ from flax import nnx
 from jax.sharding import Mesh, PartitionSpec as P
 from tqdm import tqdm
 
+# Keep JAX/XLA logging to errors unless explicitly overridden by the caller.
+jax.config.update("jax_logging_level", "ERROR")
+
 from train.checkpoints import restore_checkpoint, save_checkpoint
 from train.config import config_to_dict, parse_args
-from train.preprocess import preprocess_simulator_state
-from train.types import PreprocessConfig
+from data.preprocess import preprocess_simulator_state
+from data.types import PreprocessConfig
 from train.utils import (
     assert_matching_sim_state_signature,
     build_data_parallel_mesh_if_needed,
@@ -96,8 +105,8 @@ def make_train_step(
         target = feats["ego_trajectory"][:, : m.predict_horizon, :]
         target_bct = jnp.transpose(target, (0, 2, 1))
         loss = m.diffusion._loss_impl(target_bct, cond, key_loss)
-        # pred = m._sample_from_condition_impl(cond, key_sample)
-        return loss, {} # _trajectory_metrics(pred, target)
+        pred = m._sample_from_condition_impl(cond, key_sample)
+        return loss, _trajectory_metrics(pred, target)
 
     if use_data_parallel:
         num_devices = mesh.devices.size
@@ -110,8 +119,8 @@ def make_train_step(
             target_local = feats_local["ego_trajectory"][:, : m.predict_horizon, :]
             target_local_bct = jnp.transpose(target_local, (0, 2, 1))
             loss_local = m.diffusion._loss_impl(target_local_bct, cond_local, key_loss_local)
-            # pred_local = m._sample_from_condition_impl(cond_local, key_sample_local)
-            return loss_local, {} # _trajectory_metrics(pred_local, target_local)
+            pred_local = m._sample_from_condition_impl(cond_local, key_sample_local)
+            return loss_local, _trajectory_metrics(pred_local, target_local)
 
         pmapped_local_loss = jax.pmap(
             local_loss_with_params,
@@ -205,6 +214,19 @@ def main():
     run_data_parallel_warmup_if_needed(model, args)
     global_batch_size = int(args.batch_size)
 
+    # Waymax uses TensorFlow input pipelines; keep TF on CPU and quiet non-actionable logs.
+    import tensorflow as tf
+
+    tf.get_logger().setLevel("ERROR")
+    try:
+        tf.autograph.set_verbosity(0)
+    except Exception:
+        pass
+    try:
+        tf.config.set_visible_devices([], "GPU")
+    except Exception:
+        pass
+
     # Import Waymax dataloader lazily after data-parallel collectives are initialized.
     from waymax import config as waymax_config
     from waymax import dataloader
@@ -236,9 +258,6 @@ def main():
             tx=tx,
             coerce_tree_like_fn=coerce_tree_like,
         )
-        if "finetuning" in args.wandb_name:
-            lr_schedule = lambda _: jnp.asarray(args.lr, dtype=jnp.float32)
-            tx = optax.adamw(learning_rate=lr_schedule, weight_decay=args.weight_decay)
 
     data_parallel_enabled = bool(args.data_parallel)
     if data_parallel_enabled and not model.supports_data_parallel():
@@ -275,6 +294,24 @@ def main():
         tx,
         state_in_axes,
     )
+
+    # Compile and autotune kernels once before entering the timed training loop.
+    # We intentionally discard outputs to keep optimizer/model state unchanged.
+    _, _, _, _, _, warmup_metrics = run_train_step(
+        train_step_fn,
+        params_state,
+        opt_state,
+        ema_params,
+        rng_key,
+        global_step,
+        first_sim_state,
+        data_parallel=data_parallel_enabled,
+        data_mesh=data_mesh,
+        sim_state_treedef=sim_state_treedef,
+        sim_state_sig=sim_state_sig,
+        where="warmup",
+    )
+    _ = jax.block_until_ready(warmup_metrics["loss"])
 
     for epoch in range(start_epoch, args.epochs + 1):
         ema_loss = None

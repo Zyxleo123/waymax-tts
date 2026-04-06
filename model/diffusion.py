@@ -114,35 +114,36 @@ class UNet1DConditioned(nnx.Module):
         self.stem = nnx.Conv(in_features=in_ch, out_features=base_ch, kernel_size=(3,), padding="SAME", rngs=rngs)
 
         ch = base_ch
-        self.down_blocks = []
-        self.downsamples = []
-        self.skip_channels = []
+        down_blocks = []
+        downsamples = []
+        skip_channels = []
 
         for i, m in enumerate(ch_mult):
             out_ch = base_ch * m
             for _ in range(num_res_blocks):
-                self.down_blocks.append(ResBlock1d(ch, out_ch, base_ch, base_ch, rngs=rngs, groups=groups))
+                down_blocks.append(ResBlock1d(ch, out_ch, base_ch, base_ch, rngs=rngs, groups=groups))
                 ch = out_ch
-            self.skip_channels.append(ch)
-            self.downsamples.append(Downsample1d(ch, rngs=rngs) if i != len(ch_mult) - 1 else Identity1d())
+            skip_channels.append(ch)
+            downsamples.append(Downsample1d(ch, rngs=rngs) if i != len(ch_mult) - 1 else Identity1d())
 
         self.mid_block1 = ResBlock1d(ch, ch, base_ch, base_ch, rngs=rngs, groups=groups)
         self.mid_block2 = ResBlock1d(ch, ch, base_ch, base_ch, rngs=rngs, groups=groups)
 
-        self.up_blocks = []
-        self.upsamples = []
+        up_blocks = []
+        upsamples = []
         for i, m in reversed(list(enumerate(ch_mult))):
             out_ch = base_ch * m
             for _ in range(num_res_blocks):
-                self.up_blocks.append(ResBlock1d(ch + self.skip_channels[i], out_ch, base_ch, base_ch, rngs=rngs, groups=groups))
+                up_blocks.append(ResBlock1d(ch + skip_channels[i], out_ch, base_ch, base_ch, rngs=rngs, groups=groups))
                 ch = out_ch
-            self.upsamples.append(Upsample1d(ch, rngs=rngs) if i != 0 else Identity1d())
-        
-        # NOTE: Wrap python lists of modules in nnx submodules so their params are correctly tracked.
-        self.down_blocks = nnx.Sequential(*self.down_blocks)
-        self.downsamples = nnx.Sequential(*self.downsamples)
-        self.up_blocks = nnx.Sequential(*self.up_blocks)
-        self.upsamples = nnx.Sequential(*self.upsamples)
+            upsamples.append(Upsample1d(ch, rngs=rngs) if i != 0 else Identity1d())
+
+        # Register containers as NNX modules in a single assignment.
+        self.down_blocks = nnx.List(down_blocks)
+        self.downsamples = nnx.List(downsamples)
+        self.skip_channels = tuple(skip_channels)
+        self.up_blocks = nnx.List(up_blocks)
+        self.upsamples = nnx.List(upsamples)
 
         self.out_norm = nnx.GroupNorm(num_features=ch, num_groups=min(groups, ch), epsilon=1e-5, rngs=rngs)
         self.out_conv = nnx.Conv(in_features=ch, out_features=in_ch, kernel_size=(3,), padding="SAME", rngs=rngs)
@@ -164,10 +165,10 @@ class UNet1DConditioned(nnx.Module):
         rb = 0
         for i in range(self.n_down):
             for _ in range(self.num_res_blocks):
-                h = self.down_blocks.layers[rb](h, cond_feat, time_feat)
+                h = self.down_blocks[rb](h, cond_feat, time_feat)
                 rb += 1
             skips.append(h)
-            h = self.downsamples.layers[i](h)
+            h = self.downsamples[i](h)
 
         h = self.mid_block1(h, cond_feat, time_feat)
         h = self.mid_block2(h, cond_feat, time_feat)
@@ -182,10 +183,10 @@ class UNet1DConditioned(nnx.Module):
 
             for _ in range(self.num_res_blocks):
                 h = jnp.concatenate([h, skip], axis=-1)
-                h = self.up_blocks.layers[rb_up](h, cond_feat, time_feat)
+                h = self.up_blocks[rb_up](h, cond_feat, time_feat)
                 rb_up += 1
 
-            h = self.upsamples.layers[i](h)
+            h = self.upsamples[i](h)
 
         h = self.out_norm(h)
         h = nnx.silu(h)
@@ -277,16 +278,54 @@ class GaussianDiffusion(nnx.Module):
         var = self._extract(self.posterior_variance.value, t, x_t.shape)
         return mean, var, x0_pred
 
-    def p_sample(self, x_t: jnp.ndarray, t: jnp.ndarray, cond: jnp.ndarray, noise: jnp.ndarray) -> jnp.ndarray:
-        mean, var, _ = self.p_mean_variance(x_t, t, cond)
-        nonzero_mask = (t != 0).astype(x_t.dtype).reshape((-1, 1, 1))
-        return mean + nonzero_mask * jnp.sqrt(var) * noise
+    @staticmethod
+    def _temp_schedule(sampling_temp: float, temp_mode: str, num_steps: int) -> jnp.ndarray:
+        """Precompute per-timestep effective temperature.
 
-    def _sample_impl(self, shape: Tuple[int, int, int], cond: jnp.ndarray, rng: jax.Array) -> jnp.ndarray:
+        Returns array of shape [num_steps] indexed by diffusion loop step index
+        (0 = highest noise timestep, num_steps-1 = lowest).
+        """
+        t_idx = jnp.arange(num_steps, dtype=jnp.float32)
+        denom = jnp.maximum(num_steps - 1, 1)  # avoid /0 when num_steps==1
+        if temp_mode == "early":
+            # Full temp at high-noise (step 0 = high t), taper to 1.0 at low-noise
+            return 1.0 + (sampling_temp - 1.0) * (1.0 - t_idx / denom)
+        elif temp_mode == "late":
+            # 1.0 at high-noise, full temp at low-noise (step num_steps-1)
+            return 1.0 + (sampling_temp - 1.0) * (t_idx / denom)
+        else:  # "uniform"
+            return jnp.full((num_steps,), sampling_temp, dtype=jnp.float32)
+
+    def p_sample(self, x_t: jnp.ndarray, t: jnp.ndarray, cond: jnp.ndarray, noise: jnp.ndarray, eta: float = 1.0, sampling_temp: float = 1.0) -> jnp.ndarray:
+        _, _, x0_pred = self.p_mean_variance(x_t, t, cond)
+
+        # Predicted noise direction
+        sqrt_ab = self._extract(self.sqrt_alphas_cumprod.value, t, x_t.shape)
+        sqrt_1mab = self._extract(self.sqrt_one_minus_alphas_cumprod.value, t, x_t.shape)
+        eps_pred = (x_t - sqrt_ab * x0_pred) / sqrt_1mab
+
+        # Scale noise direction by sampling temperature
+        eps_pred = eps_pred * sampling_temp
+        x0_pred = (x_t - sqrt_1mab * eps_pred) / sqrt_ab
+
+        # DDIM variance: σ_t = η * sqrt(posterior_variance_t)
+        post_var = self._extract(self.posterior_variance.value, t, x_t.shape)
+        sigma = eta * jnp.sqrt(post_var)
+
+        # Direction coefficient: sqrt(max(1 - ᾱ_{t-1} - σ², 0))
+        abar_prev = self._extract(self.alphas_cumprod_prev.value, t, x_t.shape)
+        dir_coeff = jnp.sqrt(jnp.maximum(1.0 - abar_prev - sigma ** 2, 0.0))
+
+        # DDIM update: sqrt(ᾱ_{t-1}) * x̂₀ + dir_coeff * ε_pred + σ * noise
+        nonzero_mask = (t != 0).astype(x_t.dtype).reshape((-1, 1, 1))
+        return jnp.sqrt(abar_prev) * x0_pred + dir_coeff * eps_pred + nonzero_mask * sigma * noise
+
+    def _sample_impl(self, shape: Tuple[int, int, int], cond: jnp.ndarray, rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = shape[0]
         key_x, key_steps = jax.random.split(rng)
         x_init = jax.random.normal(key_x, shape, dtype=jnp.float32)
         num_steps = self.timesteps
+        temp_sched = self._temp_schedule(sampling_temp, temp_mode, num_steps)
 
         def body(i: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
             x_curr, key = carry
@@ -294,7 +333,8 @@ class GaussianDiffusion(nnx.Module):
             t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
             key, step_key = jax.random.split(key)
             noise = jax.random.normal(step_key, shape, dtype=jnp.float32)
-            return self.p_sample(x_curr, t, cond, noise), key
+            eff_temp = temp_sched[i]
+            return self.p_sample(x_curr, t, cond, noise, eta=eta, sampling_temp=eff_temp), key
 
         x_final, _ = jax.lax.fori_loop(0, num_steps, body, (x_init, key_steps))
         return x_final
@@ -321,12 +361,13 @@ class GaussianDiffusion(nnx.Module):
         noise = jax.random.normal(key_noise, x0.shape, dtype=jnp.float32)
         return self._compute_loss(x0, cond, noise, t)
 
-    def _resample_impl(self, proposals: jnp.ndarray, cond: jnp.ndarray, n_timesteps: int, rng: jax.Array) -> jnp.ndarray:
+    def _resample_impl(self, proposals: jnp.ndarray, cond: jnp.ndarray, n_timesteps: int, rng: jax.Array, noise_scale: float = 1.0, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = proposals.shape[0]
         key_q, key_steps = jax.random.split(rng)
-        q_noise = jax.random.normal(key_q, proposals.shape, dtype=jnp.float32)
+        q_noise = jax.random.normal(key_q, proposals.shape, dtype=jnp.float32) * noise_scale
         t0 = jnp.full((batch_size,), n_timesteps - 1, dtype=jnp.int32)
-        x = self.q_sample(proposals, t0, noise=2 * q_noise)
+        x = self.q_sample(proposals, t0, noise=q_noise)
+        temp_sched = self._temp_schedule(sampling_temp, temp_mode, n_timesteps)
 
         def body(i: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
             x_curr, key = carry
@@ -334,7 +375,8 @@ class GaussianDiffusion(nnx.Module):
             t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
             key, step_key = jax.random.split(key)
             noise = jax.random.normal(step_key, proposals.shape, dtype=jnp.float32)
-            return self.p_sample(x_curr, t, cond, noise), key
+            eff_temp = temp_sched[i]
+            return self.p_sample(x_curr, t, cond, noise, eta=eta, sampling_temp=eff_temp), key
 
         x, _ = jax.lax.fori_loop(0, n_timesteps, body, (x, key_steps))
         return x
@@ -345,8 +387,11 @@ class GaussianDiffusion(nnx.Module):
         cond: jnp.ndarray,
         *,
         rng: jax.Array,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
     ) -> jnp.ndarray:
-        return self._sample_impl(shape, cond, rng)
+        return self._sample_impl(shape, cond, rng, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
 
     def loss(
         self,
@@ -364,7 +409,11 @@ class GaussianDiffusion(nnx.Module):
         n_timesteps: int,
         *,
         rng: jax.Array,
+        noise_scale: float = 1.0,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
     ) -> jnp.ndarray:
         if n_timesteps <= 0 or n_timesteps > self.timesteps:
             raise ValueError(f"n_timesteps must be in [1, {self.timesteps}], got {n_timesteps}")
-        return self._resample_impl(proposals, cond, n_timesteps, rng)
+        return self._resample_impl(proposals, cond, n_timesteps, rng, noise_scale=noise_scale, eta=eta, sampling_temp=sampling_temp, temp_mode=temp_mode)
