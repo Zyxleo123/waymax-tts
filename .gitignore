@@ -41,3 +41,5 @@ wandb/
 videos/
 *.mp4
 *.npz
+
+waymo-open-dataset/

@@ -38,4 +38,4 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --wandb_name waymax_diffusion-1e-4 \
   --wandb_mode online \
   --jax_compilation_cache_dir .jax_compilation_cache \
-  # --resume_path /data/user_data/mineuih/checkpoints/diffusion_lr-0p0001_20260301_215223/epoch_0420
+  --resume_path /data/user_data/mineuih/waymax_rs/checkpoints/waymax_diffusion-1e-4_20260405_205859/latest

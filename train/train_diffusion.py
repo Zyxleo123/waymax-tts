@@ -105,8 +105,9 @@ def make_train_step(
         target = feats["ego_trajectory"][:, : m.predict_horizon, :]
         target_bct = jnp.transpose(target, (0, 2, 1))
         loss = m.diffusion._loss_impl(target_bct, cond, key_loss)
-        pred = m._sample_from_condition_impl(cond, key_sample)
-        return loss, _trajectory_metrics(pred, target)
+        # pred = m._sample_from_condition_impl(cond, key_sample)
+        # return loss, _trajectory_metrics(pred, target)
+        return loss, {}
 
     if use_data_parallel:
         num_devices = mesh.devices.size
@@ -119,9 +120,10 @@ def make_train_step(
             target_local = feats_local["ego_trajectory"][:, : m.predict_horizon, :]
             target_local_bct = jnp.transpose(target_local, (0, 2, 1))
             loss_local = m.diffusion._loss_impl(target_local_bct, cond_local, key_loss_local)
-            pred_local = m._sample_from_condition_impl(cond_local, key_sample_local)
-            return loss_local, _trajectory_metrics(pred_local, target_local)
-
+            # pred_local = m._sample_from_condition_impl(cond_local, key_sample_local)
+            # return loss_local, _trajectory_metrics(pred_local, target_local)
+            return loss_local, {}
+        
         pmapped_local_loss = jax.pmap(
             local_loss_with_params,
             axis_name="data",
