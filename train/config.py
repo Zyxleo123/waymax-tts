@@ -29,6 +29,7 @@ class TrainConfig:
     warmup_steps: int = 2000
     grad_clip_norm: float = 0.5
     ema_update_every: int = 4
+    goal_mask_prob: float = 0.5
 
     hidden_dim: int = 256
     cond_dim: int = 256
@@ -83,6 +84,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--warmup_steps", type=int, default=2000)
     parser.add_argument("--grad_clip_norm", type=float, default=0.5)
     parser.add_argument("--ema_update_every", type=int, default=4)
+    parser.add_argument("--goal_mask_prob", type=float, default=0.5)
 
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--cond_dim", type=int, default=256)
@@ -93,7 +95,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--predict_type", type=str, default="v", choices=["eps", "mu", "v"])
     parser.add_argument("--model_dt", type=float, default=0.2)
 
-    parser.add_argument("--max_range", type=float, default=100.0)
+    parser.add_argument("--max_range", type=float, default=30.0)
     parser.add_argument("--ego_range", type=float, default=100.0)
     parser.add_argument("--max_velocity", type=float, default=25.0)
     parser.add_argument("--max_width", type=float, default=10.0)

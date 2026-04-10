@@ -2,15 +2,15 @@
 #SBATCH --partition=general
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:a6000:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
 
 source ~/.bashrc
-conda activate es
+conda activate waymax_rs
 
-LR="${LR:-0.001}"
+LR="${LR:-0.0001}"
 WANDB_NAME="${WANDB_NAME:-womd_lr-${LR}}"
 
 CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
   --epochs 500 \
   --steps_per_epoch 1000 \
   --save_every 10 \
-  --save_dir /zfsauton/scratch/mineuih/waymax_ed/checkpoints \
+  --save_dir /zfsauton/scratch/mineuih/waymax_rs/checkpoints \
   --warmup_steps 1500 \
   --lr 0.0001 \
   --ema_update_every 1 \

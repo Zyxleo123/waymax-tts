@@ -51,6 +51,7 @@ from train.utils import (
 def make_train_step(
     preprocess_cfg: PreprocessConfig,
     grad_clip_norm: float,
+    goal_mask_prob: float,
     data_parallel: bool,
     mesh: Mesh | None,
     ema_update_every: int,
@@ -62,6 +63,19 @@ def make_train_step(
     use_data_parallel = bool(data_parallel and mesh is not None)
     ego_range = jnp.asarray(preprocess_cfg.ego_range, dtype=jnp.float32)
     max_velocity = jnp.asarray(preprocess_cfg.max_velocity, dtype=jnp.float32)
+    goal_mask_prob = jnp.asarray(jnp.clip(goal_mask_prob, 0.0, 1.0), dtype=jnp.float32)
+
+    def _maybe_mask_goal_xy(feats: dict[str, jax.Array], rng: jax.Array) -> dict[str, jax.Array]:
+        if "goal_xy" not in feats:
+            return feats
+        keep_goal = jax.random.bernoulli(
+            rng,
+            p=jnp.asarray(1.0, dtype=jnp.float32) - goal_mask_prob,
+            shape=(feats["goal_xy"].shape[0], 1),
+        )
+        masked = dict(feats)
+        masked["goal_xy"] = jnp.where(keep_goal, feats["goal_xy"], jnp.zeros_like(feats["goal_xy"]))
+        return masked
 
     def _wrap_to_pi(angle):
         return (angle + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
@@ -98,9 +112,10 @@ def make_train_step(
 
     def single_device_loss_and_metrics(p, sim_state, key_pre, key_loss, key_sample):
         m = merge_model(p)
+        key_pre, key_goal_mask = jax.random.split(key_pre)
         pre_batch, _ = preprocess_simulator_state(sim_state, key_pre, preprocess_cfg)
         # Use non-jitted impls so the loss stays connected to the merged params tree.
-        feats = pre_batch.features
+        feats = _maybe_mask_goal_xy(pre_batch.features, key_goal_mask)
         cond = m._condition_impl(m._as_features(feats))
         target = feats["ego_trajectory"][:, : m.predict_horizon, :]
         target_bct = jnp.transpose(target, (0, 2, 1))
@@ -114,8 +129,9 @@ def make_train_step(
 
         def local_loss_with_params(p, state_local, key_pre_local, key_loss_local, key_sample_local):
             m = merge_model(p)
+            key_pre_local, key_goal_mask_local = jax.random.split(key_pre_local)
             pre_local, _ = preprocess_simulator_state(state_local, key_pre_local, preprocess_cfg)
-            feats_local = pre_local.features
+            feats_local = _maybe_mask_goal_xy(pre_local.features, key_goal_mask_local)
             cond_local = m._condition_impl(m._as_features(feats_local))
             target_local = feats_local["ego_trajectory"][:, : m.predict_horizon, :]
             target_local_bct = jnp.transpose(target_local, (0, 2, 1))
@@ -288,6 +304,7 @@ def main():
     train_step_fn = make_train_step(
         preprocess_cfg,
         args.grad_clip_norm,
+        args.goal_mask_prob,
         data_parallel_enabled,
         data_mesh,
         args.ema_update_every,

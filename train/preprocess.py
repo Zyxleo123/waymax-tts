@@ -256,6 +256,7 @@ def _preprocess_single_batch(
     rng: jax.Array,
     cfg: PreprocessConfig,
     timestep: None | int,
+    goal: None | jax.Array = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     bsz = state.log_trajectory.x.shape[0]
     ego_idx = extract_ego_index(state)
@@ -305,6 +306,13 @@ def _preprocess_single_batch(
         other_valid_bn=other_valid_bn,
         cfg=cfg,
     )
+    if goal is not None:
+        origin = ego_resampled_world[:, 0, :2]
+        heading = ego_resampled_world[:, 0, 4]
+        goal_rel = _rotate_xy(goal - origin, heading) / cfg.ego_range
+        goal_xy = goal_rel.astype(jnp.float32)
+    else:
+        goal_xy = ego_traj_norm[:, -1, :2]
 
     origin_xy = ego_resampled_world[:, 0, :2]
     anchor_yaw = ego_resampled_world[:, 0, 4]
@@ -322,6 +330,7 @@ def _preprocess_single_batch(
     features = {
         "ego_state": ego_state_norm.astype(jnp.float32),
         "ego_trajectory": ego_traj_norm.astype(jnp.float32),
+        "goal_xy": goal_xy.astype(jnp.float32),
         "other_states": other_norm.astype(jnp.float32),
         "other_valid": other_valid,
         "map_features": map_features.astype(jnp.float32),
@@ -352,6 +361,7 @@ def preprocess_simulator_state(
     rng: jax.Array,
     cfg: PreprocessConfig,
     timestep: None | int = None,
+    goal: None | jax.Array = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     if state.log_trajectory.x.ndim < 3:
         raise ValueError("Expected batched SimulatorState with shape [..., N, T].")
@@ -363,12 +373,12 @@ def preprocess_simulator_state(
         keys = jax.random.split(rng, n_devices)
         if timestep is not None:
             return jax.vmap(
-                lambda s, k, t: preprocess_simulator_state(
-                    s, k, cfg, timestep=t
+                lambda s, k, t, g: preprocess_simulator_state(
+                    s, k, cfg, timestep=t, goal=g
                 )
-            )(state, keys, timestep)
+            )(state, keys, timestep, goal)
         return jax.vmap(lambda s, k: preprocess_simulator_state(s, k, cfg))(state, keys)
 
     return _preprocess_single_batch(
-        state, rng, cfg, timestep=timestep
+        state, rng, cfg, timestep=timestep, goal=goal
     )

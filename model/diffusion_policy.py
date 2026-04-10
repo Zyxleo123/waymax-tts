@@ -16,6 +16,7 @@ from .point_net import PointNet
 @struct.dataclass
 class PolicyFeatures:
     ego_state: jnp.ndarray
+    goal_xy: jnp.ndarray
     other_states: jnp.ndarray
     other_valid: jnp.ndarray
     map_features: jnp.ndarray
@@ -28,6 +29,7 @@ class PolicyFeatures:
     def from_mapping(features: Mapping[str, jnp.ndarray]) -> "PolicyFeatures":
         required = (
             "ego_state",
+            "goal_xy",
             "other_states",
             "other_valid",
             "map_features",
@@ -40,6 +42,7 @@ class PolicyFeatures:
             raise KeyError(f"Missing required feature keys: {missing}")
         return PolicyFeatures(
             ego_state=features["ego_state"],
+            goal_xy=features["goal_xy"],
             other_states=features["other_states"],
             other_valid=features["other_valid"],
             map_features=features["map_features"],
@@ -70,10 +73,11 @@ class DiffusionPolicy(nnx.Module):
         self.predict_horizon = predict_horizon
 
         self.input_proj_ego = MLP([ego_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
+        self.input_proj_goal = MLP([2, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
         self.input_proj_other = PointNet(other_dim, hidden_dim, rngs=rngs)
         self.input_proj_map = PointNet(map_attr_dim, hidden_dim, rngs=rngs)
         self.input_proj_tl = PointNet(tl_attr_dim, hidden_dim, rngs=rngs)
-        self.cond_projection = MLP([hidden_dim * 4, hidden_dim, cond_dim], rngs=rngs)
+        self.cond_projection = MLP([hidden_dim * 5, hidden_dim, cond_dim], rngs=rngs)
 
         denoise_fn = UNet1DConditioned(
             in_ch=target_dim,
@@ -122,6 +126,7 @@ class DiffusionPolicy(nnx.Module):
 
     def _condition_impl(self, features: PolicyFeatures) -> jnp.ndarray:
         ego_feature = self.input_proj_ego(features.ego_state, deterministic=True)
+        goal_feature = self.input_proj_goal(features.goal_xy, deterministic=True)
         other_feature = self.input_proj_other(
             features.other_states,
             features.other_valid,
@@ -137,7 +142,7 @@ class DiffusionPolicy(nnx.Module):
             features.traffic_light_valid,
             deterministic=True,
         )
-        cond = jnp.concatenate([ego_feature, other_feature, map_features, traffic_light_features], axis=-1)
+        cond = jnp.concatenate([ego_feature, goal_feature, other_feature, map_features, traffic_light_features], axis=-1)
         return self.cond_projection(cond, deterministic=True)
 
     def _sample_from_condition_impl(self, cond: jnp.ndarray, rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:

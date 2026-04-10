@@ -92,6 +92,29 @@ def sample_anchor_step(
     return jax.vmap(_sample_one)(valid_mask, keys)
 
 
+def sample_future_goal_step(
+    ego_valid_bt: jax.Array,
+    anchor_step_b: jax.Array,
+    rng: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    num_steps = ego_valid_bt.shape[1]
+    arange_t = jnp.arange(num_steps, dtype=jnp.int32)[None, :]
+    valid_mask = ego_valid_bt & (arange_t > anchor_step_b[:, None])
+    keys = jax.random.split(rng, valid_mask.shape[0])
+
+    def _sample_one(mask_t: jax.Array, anchor_t: jax.Array, key: jax.Array) -> tuple[jax.Array, jax.Array]:
+        count = jnp.sum(mask_t.astype(jnp.int32))
+        has_any = count > 0
+        target_rank = jax.random.randint(key, (), 0, jnp.maximum(count, 1), dtype=jnp.int32)
+        rank = jnp.cumsum(mask_t.astype(jnp.int32)) - 1
+        chosen = jnp.argmax(((rank == target_rank) & mask_t).astype(jnp.int32))
+        fallback = jnp.clip(anchor_t, 0, num_steps - 1)
+        chosen = jnp.where(has_any, chosen, fallback)
+        return chosen.astype(jnp.int32), has_any
+
+    return jax.vmap(_sample_one)(valid_mask, anchor_step_b, keys)
+
+
 def resample_trajectory_timebase_jax(
     traj_btd: jax.Array,
     src_t_s: jax.Array,
@@ -275,7 +298,14 @@ def _preprocess_single_batch(
     vx_bt = _gather_ego(state.log_trajectory.vel_x, ego_idx)
     vy_bt = _gather_ego(state.log_trajectory.vel_y, ego_idx)
     yaw_bt = _gather_ego(state.log_trajectory.yaw, ego_idx)
+    ego_valid_bt = _gather_ego(state.log_trajectory.valid, ego_idx)
     ts_bt = _gather_ego(state.log_trajectory.timestamp_micros, ego_idx).astype(jnp.float32) * 1e-6
+
+    rng, rng_goal = jax.random.split(rng)
+    goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)
+    goal_x_b = jnp.take_along_axis(x_bt, goal_step_b[:, None], axis=1)[:, 0]
+    goal_y_b = jnp.take_along_axis(y_bt, goal_step_b[:, None], axis=1)[:, 0]
+    goal_xy_world = jnp.stack([goal_x_b, goal_y_b], axis=-1)
 
     ego_world_btd_full = jnp.stack([x_bt, y_bt, vx_bt, vy_bt, yaw_bt], axis=-1)
 
@@ -305,6 +335,7 @@ def _preprocess_single_batch(
 
     origin_xy = ego_resampled_world[:, 0, :2]
     anchor_yaw = ego_resampled_world[:, 0, 4]
+    goal_xy = _rotate_xy(goal_xy_world - origin_xy, anchor_yaw) / cfg.ego_range
 
     map_features, map_valid = _build_map_features(state, origin_xy, anchor_yaw, cfg)
     tl_features, tl_valid = _build_tl_features(state, anchor_step_b, origin_xy, anchor_yaw, cfg)
@@ -319,6 +350,7 @@ def _preprocess_single_batch(
     features = {
         "ego_state": ego_state_norm.astype(jnp.float32),
         "ego_trajectory": ego_traj_norm.astype(jnp.float32),
+        "goal_xy": goal_xy.astype(jnp.float32),
         "other_states": other_norm.astype(jnp.float32),
         "other_valid": other_valid,
         "map_features": map_features.astype(jnp.float32),

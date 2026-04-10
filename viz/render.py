@@ -265,6 +265,7 @@ def render_videos_batched(
     front_y: float = 30.0,
     back_y: float = 30.0,
     align_ego_heading_up: bool = False,
+    goal_xy: np.ndarray | None = None,
 ) -> list[Path]:
     """
     Render multiple videos for arbitrary (tfrecord, scenario_index) pairs efficiently.
@@ -280,6 +281,28 @@ def render_videos_batched(
     overrides = _normalize_override_lists(
         len(tfrecord_scenarios), ego_start_times, ego_trajectories
     )
+
+    goals_per_request: list[np.ndarray | None]
+    if goal_xy is None:
+        goals_per_request = [None] * len(tfrecord_scenarios)
+    else:
+        goal_arr = np.asarray(goal_xy, dtype=np.float32)
+        if goal_arr.ndim == 1:
+            if goal_arr.shape[0] != 2 or len(tfrecord_scenarios) != 1:
+                raise ValueError(
+                    "goal_xy with rank 1 must have shape [2] and exactly one request."
+                )
+            goals_per_request = [goal_arr]
+        elif goal_arr.ndim == 2:
+            if goal_arr.shape != (len(tfrecord_scenarios), 2):
+                raise ValueError(
+                    f"goal_xy must have shape [num_requests, 2], got {goal_arr.shape}."
+                )
+            goals_per_request = [goal_arr[i] for i in range(goal_arr.shape[0])]
+        else:
+            raise ValueError(
+                f"goal_xy must have rank 1 or 2, got rank {goal_arr.ndim}."
+            )
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -320,6 +343,7 @@ def render_videos_batched(
         for req_idx, scenario_index in requests:
             batch_idx = scenario_to_batch_idx[scenario_index]
             start_t, ego_traj = overrides[req_idx]
+            req_goal_xy = goals_per_request[req_idx]
 
             state_for_render = state_batch
             request_use_log_traj = bool(use_log_traj)
@@ -352,6 +376,8 @@ def render_videos_batched(
                     batch_idx=batch_idx,
                     target_vehicle=target_vehicle,
                     world_rotation_rad=world_rotation_rad,
+                    goal_xy=req_goal_xy,
+                    goal_radius_m=2.0,
                 )
                 frame = cv2.resize(
                     frame, (int(width), int(height)), interpolation=cv2.INTER_AREA

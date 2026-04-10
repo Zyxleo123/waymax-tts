@@ -354,7 +354,9 @@ def plot_simulator_state(
     batch_idx: int = -1,
     highlight_obj: waymax_config.ObjectType = waymax_config.ObjectType.SDC,
     target_vehicle: Optional[int] = None,
-  world_rotation_rad: float = 0.0,
+    world_rotation_rad: float = 0.0,
+    goal_xy: Optional[np.ndarray] = None,
+    goal_radius_m: float = 2.0,
 ) -> np.ndarray:
   """Plots np array image for SimulatorState.
 
@@ -414,6 +416,32 @@ def plot_simulator_state(
   plot_traffic_light_signals_as_points(
       ax, traffic_lights, state.timestep, verbose=False
   )
+
+  if goal_xy is not None:
+    goal_xy_arr = np.asarray(goal_xy, dtype=np.float32).reshape(-1)
+    if goal_xy_arr.shape[0] != 2:
+      raise ValueError(f'goal_xy must have shape [2], got {goal_xy_arr.shape}.')
+    goal_xy_plot = goal_xy_arr
+    if abs(float(world_rotation_rad)) > 1e-12:
+      goal_xy_plot = _rotate_xy_array(goal_xy_arr[None, :], float(world_rotation_rad))[0]
+    goal_circle = matplotlib.patches.Circle(
+        (float(goal_xy_plot[0]), float(goal_xy_plot[1])),
+        radius=float(goal_radius_m),
+        fill=False,
+        edgecolor='gold',
+        linewidth=2.0,
+        alpha=0.9,
+        zorder=12,
+    )
+    ax.add_patch(goal_circle)
+    ax.plot(
+        float(goal_xy_plot[0]),
+        float(goal_xy_plot[1]),
+        marker='o',
+        markersize=4,
+        color='gold',
+        zorder=13,
+    )
 
   # 3. Gets np img, centered on selected agent's current location.
   # [A, 2]

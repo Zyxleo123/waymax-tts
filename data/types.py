@@ -10,7 +10,7 @@ from flax import struct
 class PreprocessConfig:
     model_dt: float = 0.2
     world_dt_fallback: float = 0.1
-    max_range: float = 100.0
+    max_range: float = 30.0
     ego_range: float = 100.0
     max_velocity: float = 25.0
     max_width: float = 10.0

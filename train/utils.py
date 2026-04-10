@@ -163,6 +163,7 @@ def run_data_parallel_warmup_if_needed(model: DiffusionPolicy, args) -> None:
     horizon = args.predict_horizon
     features = {
         "ego_state": jnp.zeros((num_gpus, per_dev, 5), dtype=jnp.float32),
+        "goal_xy": jnp.zeros((num_gpus, per_dev, 2), dtype=jnp.float32),
         "ego_trajectory": jnp.zeros((num_gpus, per_dev, horizon, args.target_dim), dtype=jnp.float32),
         "other_states": jnp.zeros((num_gpus, per_dev, n_other, 7), dtype=jnp.float32),
         "other_valid": jnp.ones((num_gpus, per_dev, n_other), dtype=jnp.bool_),
@@ -179,6 +180,7 @@ def run_data_parallel_warmup_if_needed(model: DiffusionPolicy, args) -> None:
         spec_bnt = P("data", None, None, None)
         sharded = {
             "ego_state": jax.lax.with_sharding_constraint(features["ego_state"], spec_b),
+            "goal_xy": jax.lax.with_sharding_constraint(features["goal_xy"], spec_b),
             "ego_trajectory": jax.lax.with_sharding_constraint(features["ego_trajectory"], spec_bt),
             "other_states": jax.lax.with_sharding_constraint(features["other_states"], spec_bnt),
             "other_valid": jax.lax.with_sharding_constraint(features["other_valid"], spec_bt),
