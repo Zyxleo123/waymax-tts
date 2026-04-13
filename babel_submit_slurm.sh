@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "Usage: $0 <learning_rate> [prefix]"
-  echo "Example: $0 1e-4 womd"
-  exit 1
-fi
+# if [[ $# -lt 1 || $# -gt 2 ]]; then
+#   echo "Usage: $0 <learning_rate> [prefix]"
+#   echo "Example: $0 1e-4 womd"
+#   exit 1
+# fi
 
-LR="$1"
+LR="${1:-0.0001}"
 PREFIX="${2:-waymax_diffusion}"
 
 # Make LR filename/job-safe and easy to scan.
