@@ -73,7 +73,7 @@ class DiffusionPolicy(nnx.Module):
         self.predict_horizon = predict_horizon
 
         self.input_proj_ego = MLP([ego_dim, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
-        self.input_proj_goal = MLP([2, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
+        self.input_proj_goal = MLP([3, hidden_dim, hidden_dim, hidden_dim], rngs=rngs)
         self.input_proj_other = PointNet(other_dim, hidden_dim, rngs=rngs)
         self.input_proj_map = PointNet(map_attr_dim, hidden_dim, rngs=rngs)
         self.input_proj_tl = PointNet(tl_attr_dim, hidden_dim, rngs=rngs)
@@ -126,7 +126,7 @@ class DiffusionPolicy(nnx.Module):
 
     def _condition_impl(self, features: PolicyFeatures) -> jnp.ndarray:
         ego_feature = self.input_proj_ego(features.ego_state, deterministic=True)
-        goal_feature = self.input_proj_goal(features.goal_xy, deterministic=True)
+        goal_feature = self.input_proj_goal(jnp.concatenate([features.goal_xy, features.remaining_timesteps], axis=-1), deterministic=True)
         other_feature = self.input_proj_other(
             features.other_states,
             features.other_valid,

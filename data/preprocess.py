@@ -336,6 +336,7 @@ def _preprocess_single_batch(
     origin_xy = ego_resampled_world[:, 0, :2]
     anchor_yaw = ego_resampled_world[:, 0, 4]
     goal_xy = _rotate_xy(goal_xy_world - origin_xy, anchor_yaw) / cfg.ego_range
+    remaining_timesteps = (goal_step_b - anchor_step_b) / 100.0
 
     map_features, map_valid = _build_map_features(state, origin_xy, anchor_yaw, cfg)
     tl_features, tl_valid = _build_tl_features(state, anchor_step_b, origin_xy, anchor_yaw, cfg)
@@ -351,6 +352,7 @@ def _preprocess_single_batch(
         "ego_state": ego_state_norm.astype(jnp.float32),
         "ego_trajectory": ego_traj_norm.astype(jnp.float32),
         "goal_xy": goal_xy.astype(jnp.float32),
+        "remaining_timesteps": remaining_timesteps[:, None].astype(jnp.float32),
         "other_states": other_norm.astype(jnp.float32),
         "other_valid": other_valid,
         "map_features": map_features.astype(jnp.float32),
