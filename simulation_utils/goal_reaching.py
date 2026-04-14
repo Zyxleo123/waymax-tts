@@ -19,8 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model.diffusion_planner import DiffusionPlanner, PlannerResult  # noqa: E402
-from train.infer import (  # noqa: E402
+from model.diffusion_planner import DiffusionPlanner, PlannerResult
+from model.diffusion_es_planner import DiffusionESPlanner, ESPlannerResult
+from train.infer import (
     PredictionBatch,
     _apply_ego_replacements_to_expanded_state,
     load_model_for_inference,
@@ -32,7 +33,7 @@ from waymax import config as waymax_config
 from tqdm import tqdm
 
 
-def _planner_result_to_prediction_batch(result: PlannerResult) -> PredictionBatch:
+def _planner_result_to_prediction_batch(result: PlannerResult | ESPlannerResult) -> PredictionBatch:
     return PredictionBatch(
         start_t_b=result.start_t_b,
         trajectories_world_bkt5=result.trajectory_world_bt5[:, None, :, :],
@@ -79,6 +80,7 @@ def _predict_planner_trajectories_with_periodic_replan(
     *,
     rng_key: jax.Array,
     replan_interval_steps: int,
+    es_cfg: Any = None,
 ) -> PredictionBatch:
     if int(replan_interval_steps) <= 0:
         raise ValueError(f"replan_interval_steps must be > 0, got {replan_interval_steps}.")
@@ -88,7 +90,14 @@ def _predict_planner_trajectories_with_periodic_replan(
     start_t_b = np.zeros((num_worlds,), dtype=np.int32)
 
     rng_key, key_initial = jax.random.split(rng_key)
-    initial_result = planner.plan_trajectory(sim_state, rng=key_initial, timestep=0, goal=goal_xy)
+    initial_result = planner.plan_trajectory(
+        sim_state,
+        rng=key_initial, 
+        timestep=0, 
+        goal=goal_xy,
+        elite_size=int(es_cfg.elite_size) if es_cfg is not None else 4,
+        num_iterations=int(es_cfg.num_iterations) if es_cfg is not None else 5
+    )
     initial_pred = _planner_result_to_prediction_batch(initial_result)
 
     initial_traj_bl5 = np.asarray(initial_result.trajectory_world_bt5, dtype=np.float32)
@@ -111,7 +120,9 @@ def _predict_planner_trajectories_with_periodic_replan(
             replaced_state,
             rng=key_replan,
             timestep=int(step_offset),
-            goal=goal_xy
+            goal=goal_xy,
+            elite_size=int(es_cfg.elite_size) if es_cfg is not None else 4,
+            num_iterations=int(es_cfg.num_iterations) if es_cfg is not None else 5
         )
 
         repl_traj_bl5 = np.asarray(repl_result.trajectory_world_bt5, dtype=np.float32)
@@ -201,30 +212,43 @@ def run(args) -> list[dict[str, Any]]:
 
         print(f"Testing scenarios {scenario_indices} from {os.path.basename(tfrecord_path)}...")
 
-        planner = DiffusionPlanner(
-            policy,
-            inference.preprocess_cfg,
-            population_size=int(args.population_size),
-            num_worlds=len(scenario_indices),
-        )
-
         rng_key = jax.random.PRNGKey(int(args.seed))
         goal_xy_b2, goal_t_b, ego_idx_b = _infer_goals_from_sim_state(sim_state)
+
+        if args.use_es:
+            planner = DiffusionESPlanner(
+                policy,
+                inference.preprocess_cfg,
+                population_size=int(args.population_size),
+                resample_timesteps=int(args.resample_timesteps),
+                num_worlds=len(scenario_indices),
+                metrics=["collision", "offroad"],
+            )
+            for world_idx in range(len(scenario_indices)):
+                planner.scorers[world_idx].update_lane_points(sim_state, world_idx)
+                planner.add_metric("goal", target=goal_xy_b2[world_idx], world_idx=world_idx, weight=1.0)
+        else:
+            planner = DiffusionPlanner(
+                policy,
+                inference.preprocess_cfg,
+                population_size=int(args.population_size),
+                num_worlds=len(scenario_indices),
+            )
+
         pred = _predict_planner_trajectories_with_periodic_replan(
             sim_state,
             planner,
             goal_xy_b2,
             rng_key=rng_key,
             replan_interval_steps=int(args.replan_interval_steps),
+            es_cfg=args if args.use_es else None,
         )
 
-        
         goal_eval = _evaluate_goal_reaching(
             pred,
             goal_xy_b2,
             goal_threshold_m=float(args.goal_threshold_m),
         )
-        
 
         metric_names = tuple(m.strip() for m in args.metrics.split(",") if m.strip())
         rollout = rollout_predicted_trajectories_with_metrics(
@@ -294,6 +318,9 @@ def run(args) -> list[dict[str, Any]]:
             _save_json(result_path, result)
         tested_scenarios += len(scenario_indices)
         curr_scenario_index += len(scenario_indices)
+        print(f"Finished testing scenarios {scenario_indices} from {os.path.basename(tfrecord_path)}.")
+        print(f"Current success rate: {success_all}/{tested_scenarios} = {success_all / tested_scenarios:.4f}")
+        print("" + "-" * 50)
 
     summary = {
         "num_scenarios": tested_scenarios,

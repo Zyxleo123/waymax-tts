@@ -15,10 +15,10 @@ from train.preprocess import preprocess_simulator_state
 from train.types import PreprocessBatch, PreprocessConfig
 
 from .diffusion_policy import DiffusionPolicy
-
+from .diffusion_planner import PlannerResult, DiffusionPlanner
 
 @dataclass
-class PlannerResult:
+class ESPlannerResult:
     start_t_b: jax.Array
     trajectory_norm_btd: jax.Array
     trajectory_world_bt5: jax.Array
@@ -30,7 +30,7 @@ class PlannerResult:
     current_world_bkt5: jax.Array = None  # For debugging, not populated in final result
 
 
-class DiffusionPlanner:
+class DiffusionESPlanner(DiffusionPlanner):
     """Diffusion evolutionary search planner over batched Waymax scenarios."""
 
     def __init__(
@@ -41,21 +41,19 @@ class DiffusionPlanner:
         population_size: int = 64,
         resample_timesteps: int = 5,
         num_worlds: int = 1,
+        metrics: list[str] = {"collision", "offroad"},
+        weights: dict[str, float] = None,
+        **kwargs: Any,
     ) -> None:
-        self.policy = policy
-        self.preprocess_cfg = preprocess_cfg
-        self.population_size = int(population_size)
-        self.resample_timesteps = int(resample_timesteps)
-        self.num_worlds = int(num_worlds)
-        self.scorers = [Scorer() for _ in range(num_worlds)]
-        
-        self._compute_condition_jit = jax.jit(self.policy.compute_condition)
-        self._sample_population_jit = jax.jit(
-            lambda *, cond_bf, rng: self._sample_population(
-                cond_bf=cond_bf,
-                rng=rng,
-            ),
+        super().__init__(
+            policy=policy,
+            preprocess_cfg=preprocess_cfg,
+            population_size=population_size,
+            num_worlds=num_worlds,
         )
+        self.resample_timesteps = int(resample_timesteps)
+        self.scorers = [Scorer(metrics=metrics, weights=weights) for _ in range(num_worlds)]
+        
         self._resample_population_jit = jax.jit(
             lambda *, cond_bf, proposals_bktd, rng: self._resample_population(
                 cond_bf=cond_bf,
@@ -64,24 +62,26 @@ class DiffusionPlanner:
             ),
         )
 
+    def add_metric(self, metric_name: str, target: Any = None, world_idx: int = 0, weight: float = 1.0):
+        self.scorers[world_idx].add_metric(metric_name, target=target, weight=weight)
+
     def plan_trajectory(
         self,
         sim_state,
+        goal,
         *,
         rng: jax.Array,
         elite_size: int = 4,
         num_iterations: int = 5,
         timestep: int = 0,
     ) -> PlannerResult:
-        elite_size = int(elite_size)
-        num_iterations = int(num_iterations)
-
         rng, key_pre, key_sample = jax.random.split(rng, 3)
         pre_batch, _ = preprocess_simulator_state(
             sim_state,
             key_pre,
             self.preprocess_cfg,
             timestep=timestep,
+            goal=goal,
         )
         cond_bf = self._compute_condition_jit(pre_batch.features)
 
@@ -156,7 +156,7 @@ class DiffusionPlanner:
         best_norm_bt1d = self._gather_population(current_norm_bktd, best_indices_b1)
         best_world_bt15 = self._gather_population(current_world_bkt5, best_indices_b1)
 
-        return PlannerResult(
+        return ESPlannerResult(
             start_t_b=pre_batch.aux["anchor_step"].astype(jnp.int32),
             trajectory_norm_btd=jnp.squeeze(best_norm_bt1d, axis=1),
             trajectory_world_bt5=jnp.squeeze(best_world_bt15, axis=1),
@@ -167,19 +167,6 @@ class DiffusionPlanner:
             current_scores_bk=current_scores_bk,
             current_world_bkt5=current_world_bkt5,
         )
-
-    def _sample_population(
-        self,
-        *,
-        cond_bf: jax.Array,
-        rng: jax.Array,
-    ) -> jax.Array:
-        batch_size = int(cond_bf.shape[0])
-        cond_bkf = jnp.repeat(cond_bf, repeats=self.population_size, axis=0)
-        samples_btd = self.policy.sample_from_condition(cond_bkf, rng=rng)
-        horizon = int(samples_btd.shape[1])
-        target_dim = int(samples_btd.shape[2])
-        return samples_btd.reshape(batch_size, self.population_size, horizon, target_dim)
 
     def _resample_population(
         self,
@@ -199,29 +186,6 @@ class DiffusionPlanner:
         )
         return samples_btd.reshape(batch_size, population_size, horizon, target_dim)
 
-    def _postprocess_population(
-        self,
-        proposals_bktd: jax.Array,
-        pre_batch: PreprocessBatch,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        batch_size, population_size, horizon, target_dim = proposals_bktd.shape
-        flat_proposals = proposals_bktd.reshape(batch_size * population_size, horizon, target_dim)
-        repeated_aux = self._repeat_dict_leading_axis(pre_batch.aux, repeats=population_size)
-        post = postprocess_predictions(flat_proposals, repeated_aux, self.preprocess_cfg)
-
-        world_flat = post["trajectory_world_world_dt"]
-        world_steps = int(world_flat.shape[1])
-        world_dim = int(world_flat.shape[2])
-        trajectories_world_bkt5 = world_flat.reshape(
-            batch_size,
-            population_size,
-            world_steps,
-            world_dim,
-        )
-        world_t_seconds_bt = jnp.asarray(pre_batch.aux["world_t_seconds"], dtype=jnp.float32)
-        world_t_valid_bt = jnp.asarray(pre_batch.aux["world_t_valid"])
-        return trajectories_world_bkt5, world_t_seconds_bt, world_t_valid_bt
-
     @staticmethod
     def _select_topk_per_scenario(
         scores_bk: jax.Array,
@@ -233,18 +197,6 @@ class DiffusionPlanner:
             jnp.asarray(indices_bk, dtype=jnp.int32),
             jnp.asarray(top_scores_bk, dtype=jnp.float32),
         )
-
-    @staticmethod
-    def _gather_population(population_bk: jax.Array, indices_bm: jax.Array) -> jax.Array:
-        gather_indices = jnp.asarray(indices_bm, dtype=jnp.int32)
-        trailing_shape = population_bk.shape[2:]
-        reshape_shape = gather_indices.shape + (1,) * len(trailing_shape)
-        broadcast_shape = gather_indices.shape + trailing_shape
-        gather_indices = jnp.broadcast_to(
-            gather_indices.reshape(reshape_shape),
-            broadcast_shape,
-        )
-        return jnp.take_along_axis(population_bk, gather_indices, axis=1)
 
     @staticmethod
     def _replicate_elites(elite_betd: jax.Array, *, population_size: int) -> jax.Array:
@@ -261,37 +213,3 @@ class DiffusionPlanner:
             axis=0,
         )
         return jnp.take(elite_betd, jnp.asarray(selector, dtype=jnp.int32), axis=1)
-
-    def _update_archive(
-        self,
-        *,
-        archive_norm_bktd: jax.Array,
-        archive_world_bkt5: jax.Array,
-        archive_scores_bk: jax.Array,
-        candidate_norm_bktd: jax.Array,
-        candidate_world_bkt5: jax.Array,
-        candidate_scores_bk: jax.Array,
-        keep_top_k: int,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        combined_scores_bk = jnp.concatenate([archive_scores_bk, candidate_scores_bk], axis=1)
-        combined_norm_bktd = jnp.concatenate([archive_norm_bktd, candidate_norm_bktd], axis=1)
-        combined_world_bkt5 = jnp.concatenate([archive_world_bkt5, candidate_world_bkt5], axis=1)
-
-        keep_indices_bk, keep_scores_bk = self._select_topk_per_scenario(
-            combined_scores_bk,
-            top_k=keep_top_k,
-        )
-        kept_norm_bktd = self._gather_population(combined_norm_bktd, keep_indices_bk)
-        kept_world_bkt5 = self._gather_population(combined_world_bkt5, keep_indices_bk)
-        return kept_norm_bktd, kept_world_bkt5, keep_scores_bk
-
-    @staticmethod
-    def _repeat_dict_leading_axis(
-        values: dict[str, jax.Array],
-        *,
-        repeats: int,
-    ) -> dict[str, jax.Array]:
-        return jax.tree_util.tree_map(
-            lambda x: jnp.repeat(jnp.asarray(x), repeats=repeats, axis=0),
-            values,
-        )

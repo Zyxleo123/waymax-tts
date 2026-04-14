@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -34,6 +35,7 @@ class DiffusionPlanner:
         preprocess_cfg: PreprocessConfig,
         population_size: int = 1,
         num_worlds: int = 1,
+        **kwargs: Any,
     ) -> None:
         self.policy = policy
         self.preprocess_cfg = preprocess_cfg
@@ -54,6 +56,7 @@ class DiffusionPlanner:
         *,
         rng: jax.Array,
         timestep: int = 0,
+        **kwargs: Any,
     ) -> PlannerResult:
         rng, key_pre, key_sample = jax.random.split(rng, 3)
         pre_batch, _ = preprocess_simulator_state(

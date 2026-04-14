@@ -10,36 +10,52 @@ CENTERLINE_TYPES = {
     int(MapElementIds.LANE_FREEWAY.value),
     int(MapElementIds.LANE_SURFACE_STREET.value),
 }
+MULTIPLICATIVE_METRICS = {"collision", "offroad", "direction"}
+WEIGHTED_METRICS = {"progress", "follow_lane", "set_speed", "overtake"}
 
 class Scorer:
-    def __init__(self):
-        self._multiplicative_metrics = {"collision", "offroad"}
-        self._weighted_metrics = {"progress": 1.0}
+    def __init__(self, metrics=["collision", "offroad"], weights=None):
+        self._multiplicative_metrics = {metric for metric in metrics if metric in MULTIPLICATIVE_METRICS}
+        self._weighted_metrics = {metric: 1.0 for metric in metrics if metric in WEIGHTED_METRICS}
+        if weights is not None:
+            for metric, weight in weights.items():
+                if metric in self._weighted_metrics:
+                    self._weighted_metrics[metric] = float(weight)
         self.lane_points = None
         self.target_lane = None
         self.target_speed = None
         self.target_vehicle = None
+        self.goal = None
+        self.base_metrics = set(metrics)
+        self.base_weights = weights
 
     def reset(self):
-        self._multiplicative_metrics = {"collision", "offroad"}
-        self._weighted_metrics = {"progress": 1.0}
+        self._multiplicative_metrics = {metric for metric in self.base_metrics if metric in MULTIPLICATIVE_METRICS}
+        self._weighted_metrics = {metric: 1.0 for metric in self.base_metrics if metric in WEIGHTED_METRICS}
+        if self.base_weights is not None:
+            for metric, weight in self.base_weights.items():
+                if metric in self._weighted_metrics:
+                    self._weighted_metrics[metric] = float(weight)
         self.lane_points = None
         self.target_lane = None
         self.target_speed = None
         self.target_vehicle = None
+        self.goal = None
         
-    def add_metric(self, name, target=None):
+    def add_metric(self, name, target=None, weight=1.0):
         if name in {"collision", "offroad", "direction"}:
             self._multiplicative_metrics.add(name)
         elif name == "follow_lane" and target is not None:
-            self._weighted_metrics[name] = 1.0
+            self._weighted_metrics[name] = float(weight)
             self.target_lane = target
         elif name == "set_speed" and target is not None:
-            self._weighted_metrics[name] = 1.0
+            self._weighted_metrics[name] = float(weight)
             self.target_speed = float(target)
         elif name == "overtake" and target is not None:
-            self._weighted_metrics[name] = 1.0
+            self._weighted_metrics[name] = float(weight)
             self.target_vehicle = target
+        elif name == "goal" and target is not None:
+            self.goal = target
 
     def remove_metric(self, name):
         if name in self._multiplicative_metrics:
@@ -52,6 +68,8 @@ class Scorer:
                 self.target_speed = None
             elif name == "overtake":
                 self.target_vehicle = None
+            elif name == "goal":
+                self.goal = None
 
     def get_ego_idx(self, sim_state, world_idx):
         ego_mask = jnp.asarray(sim_state.object_metadata.is_sdc[world_idx]).astype(bool)
@@ -893,6 +911,19 @@ class Scorer:
         ego_trajectories = jnp.asarray(ego_trajectories)
         progress = jnp.linalg.norm(ego_trajectories[:, -1, :2] - ego_trajectories[:, 0, :2], axis=-1)
         return progress / 100.0
+    
+    def compute_goal_score(self, ego_trajectories):
+        ego_trajectories = jnp.asarray(ego_trajectories)
+        if self.goal is None:
+            return jnp.ones((ego_trajectories.shape[0],), dtype=jnp.float32)
+        goal = jnp.asarray(self.goal, dtype=jnp.float32)
+        if goal.shape != (2,):
+            raise ValueError(f"goal must have shape (2,), got {goal.shape}")
+        traj_xy = ego_trajectories[:, :, :2]
+        dist_to_goal = jnp.linalg.norm(traj_xy - goal[None, None, :], axis=-1)
+        dist_to_goal = jnp.mean(dist_to_goal, axis=1)
+        score = jnp.clip(50.0 - dist_to_goal, 0.0, 50.0) / 50.0
+        return score.astype(jnp.float32)
 
     
     def compute_score(self, trajectories, sim_state, timestep, world_idx=0):
@@ -964,6 +995,9 @@ class Scorer:
                 elif metric_name == "overtake":
                     overtake_score = self.compute_overtake_score(ego_trajectories, object_trajectories)
                     score = score + weight * overtake_score
+                elif metric_name == "goal":
+                    goal_score = self.compute_goal_score(ego_trajectories)
+                    score = score + weight * goal_score
                 score = score / total_weight
         if "collision" in self._multiplicative_metrics:
             collision_score = self.compute_collision_score(ego_trajectories, object_trajectories, object_masks)

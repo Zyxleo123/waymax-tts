@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a6000:1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=256G
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00
 
 source ~/.bashrc
@@ -14,7 +14,7 @@ LR="${LR:-0.0001}"
 WANDB_NAME="${WANDB_NAME:-womd_lr-${LR}}"
 
 CUDA_VISIBLE_DEVICES=0 python -m train.train_diffusion \
-  --tfrecord_path /zfsauton/datasets/womd/tf_example/training/training_tfexample.tfrecord@1000 \
+  --tfrecord_path /zfsauton/scratch/mineuih/womd/training/training_tfexample.tfrecord@1000 \
   --seed 42 \
   --batch_size 256 \
   --shuffle_buffer_size 256 \

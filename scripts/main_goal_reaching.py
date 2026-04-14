@@ -40,7 +40,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max_num_objects", type=int, default=32)
     parser.add_argument("--num_worlds", type=int, default=10)
     parser.add_argument("--num_scenarios", type=int, default=100)
-    parser.add_argument("--population_size", type=int, default=1)
+    parser.add_argument("--use_es", action="store_true", default=False)
+    parser.add_argument("--population_size", type=int, default=128)
+    parser.add_argument("--resample_timesteps", type=int, default=5)
+    parser.add_argument("--elite_size", type=int, default=16)
+    parser.add_argument("--num_iterations", type=int, default=5)
     parser.add_argument("--replan_interval_steps", type=int, default=5)
     parser.add_argument("--goal_threshold_m", type=float, default=2.0)
     parser.add_argument("--metrics", type=str, default="overlap,offroad")
@@ -58,6 +62,15 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.use_es:
+        print("Using DiffusionESPlanner with config:")
+        print(f"  population_size: {args.population_size}")
+        print(f"  resample_timesteps: {args.resample_timesteps}")
+        print(f"  elite_size: {args.elite_size}")
+        print(f"  num_iterations: {args.num_iterations}")
+    else:
+        print("Using DiffusionPlanner without evolutionary search.")
+        args.population_size = 1  # Override population size to 1 when not using ES
     run(args)
 
 

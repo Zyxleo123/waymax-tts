@@ -199,7 +199,7 @@ class DiffusionPolicy(nnx.Module):
         *,
         rng: jax.Array,
         data_parallel: bool = False,
-        noise_scale: float = 1.0,
+        noise_scale: float = 2.0,
         eta: float = 1.0,
         sampling_temp: float = 1.0,
         temp_mode: str = "uniform",
