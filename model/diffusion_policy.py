@@ -17,6 +17,7 @@ from .point_net import PointNet
 class PolicyFeatures:
     ego_state: jnp.ndarray
     goal_xy: jnp.ndarray
+    remaining_timesteps: jnp.ndarray
     other_states: jnp.ndarray
     other_valid: jnp.ndarray
     map_features: jnp.ndarray
@@ -30,6 +31,7 @@ class PolicyFeatures:
         required = (
             "ego_state",
             "goal_xy",
+            "remaining_timesteps",
             "other_states",
             "other_valid",
             "map_features",
@@ -43,6 +45,7 @@ class PolicyFeatures:
         return PolicyFeatures(
             ego_state=features["ego_state"],
             goal_xy=features["goal_xy"],
+            remaining_timesteps=features["remaining_timesteps"],
             other_states=features["other_states"],
             other_valid=features["other_valid"],
             map_features=features["map_features"],

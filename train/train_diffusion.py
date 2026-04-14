@@ -75,6 +75,7 @@ def make_train_step(
         )
         masked = dict(feats)
         masked["goal_xy"] = jnp.where(keep_goal, feats["goal_xy"], jnp.zeros_like(feats["goal_xy"]))
+        masked["remaining_timesteps"] = jnp.where(keep_goal, feats["remaining_timesteps"], jnp.zeros_like(feats["remaining_timesteps"]))
         return masked
 
     def _wrap_to_pi(angle):
