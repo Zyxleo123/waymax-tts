@@ -538,16 +538,22 @@ def build_and_save_lanegraph_shards_by_tfexample(
     }
 
 def main():
-    dataset_dir = "/zfsauton/datasets/womd"
-    num_shards = 1000
-    partition_size = 100
+    import argparse
+    from glob import glob
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset_dir", type=str, default="/zfsauton/datasets/womd")
+    parser.add_argument("--type", type=str, default="training", choices=["training", "validation", "testing"])
+    args = parser.parse_args()
+    dataset_dir = args.dataset_dir
+    num_shards = len(glob(f"{dataset_dir}/scenario/{args.type}/{args.type}.tfrecord-*"))
+    partition_size = 50
 
     scenario_files = [
-        f"{dataset_dir}/scenario/training/training.tfrecord-{i:05d}-of-01000"
+        f"{dataset_dir}/scenario/{args.type}/{args.type}.tfrecord-{i:05d}-of-{num_shards:05d}"
         for i in range(num_shards)
     ]
     tfexample_files = [
-        f"{dataset_dir}/tf_example/training/training_tfexample.tfrecord-{i:05d}-of-01000"
+        f"{dataset_dir}/tf_example/{args.type}/{args.type}_tfexample.tfrecord-{i:05d}-of-{num_shards:05d}"
         for i in range(num_shards)
     ]
 

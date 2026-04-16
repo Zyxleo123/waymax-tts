@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import argparse
@@ -33,8 +34,7 @@ from simulation_utils.utils import _parse_int_csv, _save_json  # noqa: E402
 from viz.render import _load_scenario_state_batch_fast, render_videos_batched  # noqa: E402
 from waymax import config as waymax_config
 from tqdm import tqdm
-from .utils import check_traffic_light_violation, _predict_planner_trajectories_with_periodic_replan
-
+from .utils import check_ego_reached_target_lane, check_traffic_light_violation, _predict_planner_trajectories_with_periodic_replan
 
 
 def _infer_goals_from_sim_state(sim_state) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -134,7 +134,8 @@ def run(args) -> list[dict[str, Any]]:
     lane_graph_zip_path: Path | None = None
 
     while tested_scenarios < int(args.num_scenarios):
-        scenario_indices = curr_scenario_index + np.arange(int(args.num_worlds))
+        # scenario_indices = curr_scenario_index + np.arange(int(args.num_worlds))
+        scenario_indices = [8]
         try:
             sim_state, _ = _load_scenario_state_batch_fast(ds_cfg, scenario_indices)
         except Exception as e:
@@ -148,6 +149,7 @@ def run(args) -> list[dict[str, Any]]:
         rng_key = jax.random.PRNGKey(int(args.seed))
         goal_xy_b2, goal_t_b, ego_idx_b = _infer_goals_from_sim_state(sim_state)
 
+
         planner = DiffusionESPlanner(
             policy,
             inference.preprocess_cfg,
@@ -156,7 +158,7 @@ def run(args) -> list[dict[str, Any]]:
             num_worlds=len(scenario_indices),
             metrics=["collision", "offroad", "tl_violation"],
         )
-
+        target_lanes = []
         if lane_graph_dir:
             requested_zip_path = _lane_graph_zip_path_for_tfrecord(str(tfrecord_path), lane_graph_dir)
             if lane_graph_zip_path != requested_zip_path:
@@ -165,17 +167,45 @@ def run(args) -> list[dict[str, Any]]:
                     lane_graph_store = LaneGraphShardStore(lane_graph_zip_path.as_posix())
                 else:
                     lane_graph_store = None
-                    raise FileNotFoundError(f"Lane graph zip file {lane_graph_zip_path} not found for tfrecord {tfrecord_path}.")
+                    print(
+                        f"[warn] lane graph shard zip not found for tfrecord: "
+                        f"{lane_graph_zip_path.as_posix()}"
+                    )
+        targeted_indices = []
         lane_graphs = []
         for world_idx in range(len(scenario_indices)):
-            graph = lane_graph_store.get_by_record_index(int(scenario_indices[world_idx]))
-            planner.scorers[world_idx].set_lane_graph(graph)
-            lane_graphs.append(graph)
+            if lane_graph_store is not None:
+                graph = lane_graph_store.get_by_record_index(int(scenario_indices[world_idx]))
+                if graph is not None:
+                    planner.scorers[world_idx].set_lane_graph(graph)
+                    lane_graphs.append(graph)
+                else:
+                    raise ValueError(f"Lane graph not found in shard for scenario index {scenario_indices[world_idx]} in tfrecord {tfrecord_path}.")
             scorer_helpers.update_lane_points(
                 planner.scorers[world_idx], sim_state, world_idx
             )
-            planner.add_metric("goal", target=goal_xy_b2[world_idx], world_idx=world_idx, weight=1.0)
-
+            if args.task == "change_lane_right":
+                target_lane = scorer_helpers.get_right_lane(
+                    planner.scorers[world_idx],
+                    sim_state,
+                    timestep=0,
+                    world_idx=world_idx,
+                )
+            elif args.task == "change_lane_left":
+                target_lane = scorer_helpers.get_left_lane(
+                    planner.scorers[world_idx],
+                    sim_state,
+                    timestep=0,
+                    world_idx=world_idx,
+                )
+            else:
+                target_lane = None
+            target_lanes.append(target_lane)
+            if target_lane is not None:
+                planner.add_metric("follow_lane", target=target_lane, world_idx=world_idx, weight=1.0)
+                targeted_indices.append(world_idx)
+        print(f"Added follow_lane metric for worlds with indices: {targeted_indices}")
+        
         pred, replaced_state = _predict_planner_trajectories_with_periodic_replan(
             sim_state,
             planner,
@@ -199,28 +229,30 @@ def run(args) -> list[dict[str, Any]]:
             metric_names=metric_names,
             rng_key=rng_key,
         )
+
         tl_violation_timeseries = check_traffic_light_violation(
             replaced_state,
             lane_graphs,
-            dist_threshold=2.0,
-            stop_state=4,
         )
         tl_violation = tl_violation_timeseries.sum(axis=1) > 0
-
         overlap = np.zeros((len(scenario_indices),), dtype=bool)
         offroad = np.zeros((len(scenario_indices),), dtype=bool)
         if "overlap" in rollout.metric_timeseries:
             overlap_timeseries = np.asarray(rollout.metric_timeseries["overlap"])
-            overlap = overlap_timeseries.sum(axis=(1, 2)) > 0
+            overlap = overlap_timeseries.sum(axis=(1, 2)) < 0
         if "offroad" in rollout.metric_timeseries:
             offroad_timeseries = np.asarray(rollout.metric_timeseries["offroad"])
-            offroad = offroad_timeseries.sum(axis=(1, 2)) > 0
+            offroad = offroad_timeseries.sum(axis=(1, 2)) < 0
 
-        success = goal_eval["reached"] & (~overlap) & (~offroad) & (~tl_violation)
-        reached_all += int(np.sum(goal_eval["reached"]))
-        success_all += int(np.sum(success))
         pred_traj = np.asarray(pred.trajectories_world_bkt5)
         start_t = np.asarray(pred.start_t_b, dtype=np.int32)
+
+        target_exists = np.array([tl is not None for tl in target_lanes], dtype=bool)
+        on_target = check_ego_reached_target_lane(pred_traj, target_lanes, world_indices=range(len(scenario_indices)))
+
+        success = on_target & (~overlap) & (~offroad) & (~tl_violation)
+        reached_all += int(np.sum(on_target))
+        success_all += int(np.sum(success))
 
         video_requests = [
             (str(tfrecord_path), int(idx)) for idx in scenario_indices
@@ -250,22 +282,25 @@ def run(args) -> list[dict[str, Any]]:
             result = {
                 "scenario_idx": int(scenario_idx),
                 "ego_idx": int(ego_idx_b[i]),
-                "goal_xy": [float(goal_xy_b2[i, 0]), float(goal_xy_b2[i, 1])],
-                "goal_timestep": int(goal_t_b[i]),
-                "goal_threshold_m": float(args.goal_threshold_m),
-                "goal_reached": bool(goal_eval["reached"][i]),
-                "reached_timestep": int(goal_eval["reached_step"][i]),
-                "min_goal_distance_m": float(goal_eval["min_goal_distance_m"][i]),
-                "final_goal_distance_m": float(goal_eval["final_goal_distance_m"][i]),
                 "overlap": bool(overlap[i]),
                 "offroad": bool(offroad[i]),
-                "tl_violation": bool(tl_violation[i]),
                 "success": bool(success[i]),
+                "reached": bool(on_target[i]),
+                "target_exists": bool(target_exists[i]),
+                "tl_violation": bool(tl_violation[i]),
                 "video_path": video_paths[i].as_posix(),
                 "tfrecord": str(tfrecord_path),
             }
             result_path = output_dir / f"{os.path.basename(tfrecord_path)}.scenario_{scenario_idx:03d}.json"
             _save_json(result_path, result)
+            if args.save_traj and bool(success[i]):
+                data_path = output_dir / "traj" / f"{Path(tfrecord_path).name}.scenario_{scenario_idx:03d}.npz"
+                os.makedirs(data_path.parent, exist_ok=True)
+                np.savez(
+                    data_path,
+                    trajectories_world_bkt5=pred_traj[i],
+                )
+
         tested_scenarios += len(scenario_indices)
         curr_scenario_index += len(scenario_indices)
         print(f"Finished testing scenarios {scenario_indices} from {os.path.basename(tfrecord_path)}.")

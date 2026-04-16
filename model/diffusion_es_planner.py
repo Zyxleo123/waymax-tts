@@ -9,7 +9,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from scores.scorer import Scorer
+# from scores.scorer import Scorer
+from scores.scorer_lane_graph import Scorer
 from train.postprocess import postprocess_predictions
 from train.preprocess import preprocess_simulator_state
 from train.types import PreprocessBatch, PreprocessConfig
@@ -41,7 +42,7 @@ class DiffusionESPlanner(DiffusionPlanner):
         population_size: int = 64,
         resample_timesteps: int = 5,
         num_worlds: int = 1,
-        metrics: list[str] = {"collision", "offroad"},
+        metrics: list[str] = {"collision", "offroad", "tl_violation"},
         weights: dict[str, float] = None,
         **kwargs: Any,
     ) -> None:
@@ -69,8 +70,10 @@ class DiffusionESPlanner(DiffusionPlanner):
         self,
         sim_state,
         goal,
+        goal_t,
         *,
         rng: jax.Array,
+        mask_goal: bool = False,
         elite_size: int = 4,
         num_iterations: int = 5,
         timestep: int = 0,
@@ -82,6 +85,8 @@ class DiffusionESPlanner(DiffusionPlanner):
             self.preprocess_cfg,
             timestep=timestep,
             goal=goal,
+            goal_t=goal_t,
+            mask_goal=mask_goal
         )
         cond_bf = self._compute_condition_jit(pre_batch.features)
 

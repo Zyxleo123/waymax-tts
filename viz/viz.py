@@ -327,10 +327,74 @@ def plot_traffic_light_signals_as_points(
 
   tls_xy = tls.xy[:, timestep][valid]
   tls_state = tls.state[:, timestep][valid]
+  tls_indices = np.where(valid)[0]
 
-  for xy, state in zip(tls_xy, tls_state):
+  for idx, xy, state in zip(tls_indices, tls_xy, tls_state):
     tl_color = TRAFFIC_LIGHT_COLORS[int(state)]
     ax.plot(xy[0], xy[1], marker='o', color=tl_color, ms=6, mec='black', mew=0.6)
+    # ax.text(
+    #     xy[0] + 0.8,
+    #     xy[1] + 0.8,
+    #     str(idx),
+    #     fontsize=7,
+    #     color='black',
+    #     ha='left',
+    #     va='bottom',
+    #     zorder=5,
+    # )
+
+
+def plot_stop_controlled_lanes(
+    ax: matplotlib.axes.Axes,
+    rg_pts: datatypes.RoadgraphPoints,
+    tls: datatypes.TrafficLights,
+    timestep: int = 0,
+) -> None:
+  """Highlights lane centerlines controlled by STOP traffic lights."""
+  if len(rg_pts.shape) != 1 or len(tls.shape) != 2:
+    return
+
+  tl_valid = np.asarray(tls.valid[:, timestep]).astype(bool)
+  if not np.any(tl_valid):
+    return
+  tl_state = np.asarray(tls.state[:, timestep])
+  tl_lane_ids = np.asarray(tls.lane_ids[:, timestep])
+  stop_mask = tl_valid & (tl_state == 4) & (tl_lane_ids > 0)
+  if not np.any(stop_mask):
+    return
+  stop_lane_ids = np.unique(tl_lane_ids[stop_mask])
+
+  rg_valid = np.asarray(rg_pts.valid).astype(bool)
+  rg_ids = np.asarray(rg_pts.ids)
+  rg_types = np.asarray(rg_pts.types)
+  rg_xy = np.asarray(rg_pts.xy)
+  lane_center_mask = np.isin(rg_types, np.array([1, 2, 3], dtype=rg_types.dtype))
+  base_mask = rg_valid & lane_center_mask
+  if not np.any(base_mask):
+    return
+
+  for lane_id in stop_lane_ids:
+    lane_mask = base_mask & (rg_ids == lane_id)
+    lane_xy = rg_xy[lane_mask]
+    if lane_xy.shape[0] >= 2:
+      ax.plot(
+          lane_xy[:, 0],
+          lane_xy[:, 1],
+          color='xkcd:red',
+          linewidth=2.8,
+          alpha=0.9,
+          zorder=3.5,
+      )
+    elif lane_xy.shape[0] == 1:
+      ax.plot(
+          lane_xy[0, 0],
+          lane_xy[0, 1],
+          marker='o',
+          color='xkcd:red',
+          markersize=4.0,
+          alpha=0.9,
+          zorder=3.5,
+      )
 
 
 def _plot_path_points(ax: matplotlib.axes.Axes, paths: datatypes.Paths) -> None:
@@ -413,6 +477,9 @@ def plot_simulator_state(
 
   # 2. Plots road graph elements.
   plot_roadgraph_points(ax, roadgraph_points, verbose=False)
+  # plot_stop_controlled_lanes(
+  #     ax, roadgraph_points, traffic_lights, state.timestep
+  # )
   plot_traffic_light_signals_as_points(
       ax, traffic_lights, state.timestep, verbose=False
   )
