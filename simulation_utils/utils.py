@@ -167,6 +167,8 @@ def check_ego_reached_target_lane(pred_traj, target_lanes, world_indices=None, d
 def _lane_start_pose_from_lane_graph(lane_graph, lane_id: int) -> np.ndarray | None:
     """Returns [x, y, heading] of a lane's start point from lane graph."""
     lane_range = lane_graph.lane_id_to_node_range.get(int(lane_id))
+    if lane_range is None:
+        return None
     start, end = int(lane_range[0]), int(lane_range[1])
     nodes_xyz = np.asarray(lane_graph.nodes_xyz, dtype=np.float32)
     if start < 0 or end > int(nodes_xyz.shape[0]):
