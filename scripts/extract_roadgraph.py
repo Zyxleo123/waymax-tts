@@ -542,9 +542,11 @@ def main():
     from glob import glob
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_dir", type=str, default="/zfsauton/datasets/womd")
+    parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--type", type=str, default="training", choices=["training", "validation", "testing"])
     args = parser.parse_args()
     dataset_dir = args.dataset_dir
+    output_dir = args.output_dir
     num_shards = len(glob(f"{dataset_dir}/scenario/{args.type}/{args.type}.tfrecord-*"))
     partition_size = 50
 
@@ -556,8 +558,6 @@ def main():
         f"{dataset_dir}/tf_example/{args.type}/{args.type}_tfexample.tfrecord-{i:05d}-of-{num_shards:05d}"
         for i in range(num_shards)
     ]
-
-    output_dir = "/zfsauton/scratch/mineuih/waymax_rs/lane_graphs"
 
     for i in range(num_shards // partition_size):
         print(f"making lane graph shards for {i * partition_size} ~ {(i + 1) * partition_size} scenario shards")
