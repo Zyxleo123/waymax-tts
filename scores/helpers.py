@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from waymax.datatypes.roadgraph import MapElementIds
+from waymax.datatypes.object_state import ObjectTypeIds
 
 
 CENTERLINE_TYPES = {
@@ -14,7 +15,7 @@ CENTERLINE_TYPES = {
 }
 
 
-def get_ego_idx(scorer: Any, sim_state, world_idx):
+def get_ego_idx(sim_state, world_idx):
     ego_mask = jnp.asarray(sim_state.object_metadata.is_sdc[world_idx]).astype(bool)
     if int(jnp.sum(ego_mask)) != 1:
         raise ValueError(
@@ -22,6 +23,82 @@ def get_ego_idx(scorer: Any, sim_state, world_idx):
         )
     return int(jnp.argmax(ego_mask.astype(jnp.int32)))
 
+def get_vehicle_mask(sim_state, world_idx):
+    object_types = jnp.asarray(sim_state.object_metadata.object_types[world_idx])
+    vehicle_mask = (object_types == int(ObjectTypeIds.VEHICLE.value))
+    return vehicle_mask
+
+def get_pedestrian_mask(sim_state, world_idx):
+    object_types = jnp.asarray(sim_state.object_metadata.object_types[world_idx])
+    pedestrian_mask = (object_types == int(ObjectTypeIds.PEDESTRIAN.value)) | (object_types == int(ObjectTypeIds.CYCLIST.value))
+    return pedestrian_mask
+
+
+def get_vehicle_current_lane_ids(
+    scorer: Any,
+    sim_state,
+    timestep,
+    world_idx=0,
+    max_distance=30,
+    seed_heading_threshold_rad=jnp.pi / 6.0,
+) -> List[Optional[int]]:
+    if scorer.lane_points is None:
+        update_lane_points(scorer, sim_state, world_idx)
+
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    ego_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx][ego_idx], dtype=jnp.float32)
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+    vehicle_mask = jnp.asarray(get_vehicle_mask(sim_state, world_idx)).astype(jnp.bool_)
+
+    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
+            f"got {object_xy.shape}"
+        )
+    if object_valid.ndim != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
+            f"got {object_valid.shape}"
+        )
+    if vehicle_mask.ndim != 1:
+        raise ValueError(
+            "sim_state.object_metadata.object_types must produce a 1D vehicle mask, "
+            f"got {vehicle_mask.shape}"
+        )
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+    distance = jnp.linalg.norm(object_xy[:, t] - ego_xy[t, :], axis=-1)
+    num_objects = int(object_xy.shape[0])
+    current_lane_ids: List[Optional[int]] = [None] * num_objects
+    for obj_idx in range(num_objects):
+        if not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]) or distance[obj_idx] > max_distance:
+            continue
+        seed_idx = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=obj_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        current_lane_ids[obj_idx] = lane_id_from_seed(scorer, seed_idx)
+
+    return current_lane_ids
+
+def lane_xy_dir(scorer: Any, lane_id: int) -> Optional[Tuple[jnp.ndarray, jnp.ndarray]]:
+    if scorer._lane_graph is None or scorer.lane_points is None:
+        return None
+    node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lane_id))
+    if node_range is None:
+        return None
+    start, end = node_range
+    if end <= start:
+        return None
+    lane_xy = jnp.asarray(scorer.lane_points[start:end, :2], dtype=jnp.float32)
+    lane_dir = jnp.asarray(scorer.lane_points[start:end, 2:4], dtype=jnp.float32)
+    return lane_xy, lane_dir
 
 def get_closest_lane_point(
     scorer: Any,
@@ -33,27 +110,14 @@ def get_closest_lane_point(
 ):
     if scorer.lane_points is None:
         update_lane_points(scorer, sim_state, world_idx)
-    if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
-        raise ValueError("lane_points is empty. Call update_lane_points with a valid scenario first.")
-
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
-    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
-            f"got {object_xy.shape}"
-        )
-    if object_yaw.ndim != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.yaw must have shape [num_objects, num_timesteps], "
-            f"got {object_yaw.shape}"
-        )
 
     max_t = int(object_xy.shape[1]) - 1
     t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
 
     if target_vehicle == "ego":
-        target_idx = get_ego_idx(scorer, sim_state, world_idx)
+        target_idx = get_ego_idx(sim_state, world_idx)
     else:
         target_idx = int(target_vehicle)
         if target_idx < 0 or target_idx >= int(object_xy.shape[0]):
@@ -81,210 +145,6 @@ def get_closest_lane_point(
     if bool(jnp.any(seed_heading_ok)):
         return int(jnp.argmin(seed_dist2))
     return int(jnp.argmin(dist2))
-
-
-def extend_lane_points(scorer: Any, seed_idx, ray_distance_threshold_m=0.5):
-    lane_points = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
-    if lane_points.ndim != 2 or lane_points.shape[1] < 4:
-        raise ValueError(
-            "lane_points must have shape [num_points, >=4] with x,y,dir_x,dir_y columns, "
-            f"got {lane_points.shape}"
-        )
-    if int(lane_points.shape[0]) == 0:
-        return jnp.empty((0, 4), dtype=jnp.float32)
-
-    seed_idx = int(seed_idx)
-    if seed_idx < 0 or seed_idx >= int(lane_points.shape[0]):
-        raise IndexError(f"seed_idx out of range: {seed_idx} for num_lane_points={int(lane_points.shape[0])}")
-
-    lane_xy = lane_points[:, :2]
-    current_lane_indices = [seed_idx]
-    visited_indices = {seed_idx}
-    max_hops = int(lane_points.shape[0])
-
-    for _ in range(max_hops):
-        cur_idx = current_lane_indices[-1]
-        cur_xy = lane_xy[cur_idx]
-        cur_dir = lane_points[cur_idx, 2:4]
-        cur_dir_norm = jnp.maximum(jnp.linalg.norm(cur_dir), 1e-6)
-        ray_dir = cur_dir / cur_dir_norm
-
-        rel_xy = lane_xy - cur_xy[None, :]
-        proj = jnp.sum(rel_xy * ray_dir[None, :], axis=-1)
-        rel_norm2 = jnp.sum(rel_xy * rel_xy, axis=-1)
-        perp2 = jnp.maximum(rel_norm2 - proj * proj, 0.0)
-        perp = jnp.sqrt(perp2)
-
-        visited_mask = jnp.zeros((lane_points.shape[0],), dtype=jnp.bool_)
-        if visited_indices:
-            visited_arr = jnp.asarray(sorted(visited_indices), dtype=jnp.int32)
-            visited_mask = visited_mask.at[visited_arr].set(True)
-
-        valid_forward = proj > 1e-5
-        valid_ray = perp < ray_distance_threshold_m
-        candidate_mask = valid_forward & valid_ray & (~visited_mask)
-
-        if not bool(jnp.any(candidate_mask)):
-            break
-
-        candidate_dir = lane_points[:, 2:4]
-        candidate_dir_norm = jnp.maximum(
-            jnp.linalg.norm(candidate_dir, axis=-1, keepdims=True), 1e-6
-        )
-        candidate_dir_unit = candidate_dir / candidate_dir_norm
-        cur_heading = jnp.arctan2(ray_dir[1], ray_dir[0])
-        cand_heading = jnp.arctan2(candidate_dir_unit[:, 1], candidate_dir_unit[:, 0])
-        heading_delta = cur_heading - cand_heading
-        wrapped_delta = jnp.arctan2(jnp.sin(heading_delta), jnp.cos(heading_delta))
-        direction_error = jnp.abs(wrapped_delta)
-
-        large = jnp.asarray(1e9, dtype=jnp.float32)
-        tie_break = 1e-3 * proj
-        selection_score = jnp.where(candidate_mask, direction_error + tie_break, large)
-        next_idx = int(jnp.argmin(selection_score))
-
-        if not bool(candidate_mask[next_idx]):
-            break
-
-        current_lane_indices.append(next_idx)
-        visited_indices.add(next_idx)
-
-    lane_idx_arr = jnp.asarray(current_lane_indices, dtype=jnp.int32)
-    return lane_points[lane_idx_arr, :4].astype(jnp.float32)
-
-
-def get_current_lane_from_points(
-    scorer: Any,
-    sim_state,
-    timestep,
-    world_idx=0,
-    ray_distance_threshold_m=0.5,
-    seed_heading_threshold_rad=jnp.pi / 6.0,
-):
-    if scorer.lane_points is None:
-        update_lane_points(scorer, sim_state, world_idx)
-    if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
-        return jnp.empty((0, 4), dtype=jnp.float32)
-    seed_idx = get_closest_lane_point(
-        scorer,
-        sim_state,
-        timestep,
-        world_idx=world_idx,
-        target_vehicle="ego",
-        seed_heading_threshold_rad=seed_heading_threshold_rad,
-    )
-    return extend_lane_points(
-        scorer, seed_idx, ray_distance_threshold_m=ray_distance_threshold_m
-    )
-
-
-def get_side_lane_from_points(
-    scorer: Any,
-    sim_state,
-    timestep,
-    world_idx=0,
-    side="left",
-    max_side_distance_m=5.0,
-    min_side_distance_m=0.5,
-    max_longitudinal_distance_m=0.5,
-    max_direction_delta_rad=jnp.pi / 6.0,
-    ray_distance_threshold_m=0.5,
-    seed_heading_threshold_rad=jnp.pi / 6.0,
-):
-    if side not in {"left", "right"}:
-        raise ValueError(f"side must be 'left' or 'right', got {side}")
-
-    if scorer.lane_points is None:
-        update_lane_points(scorer, sim_state, world_idx)
-    if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
-        return None
-
-    seed_idx = get_closest_lane_point(
-        scorer,
-        sim_state,
-        timestep,
-        world_idx=world_idx,
-        target_vehicle="ego",
-        seed_heading_threshold_rad=seed_heading_threshold_rad,
-    )
-
-    lane_points = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
-    lane_xy = lane_points[:, :2]
-
-    seed_xy = lane_xy[seed_idx]
-    seed_dir = lane_points[seed_idx, 2:4]
-    seed_dir_norm = jnp.maximum(jnp.linalg.norm(seed_dir), 1e-6)
-    seed_dir_unit = seed_dir / seed_dir_norm
-
-    left_vec = jnp.asarray([-seed_dir_unit[1], seed_dir_unit[0]], dtype=jnp.float32)
-    rel_xy = lane_xy - seed_xy[None, :]
-    longitudinal_proj = jnp.sum(rel_xy * seed_dir_unit[None, :], axis=-1)
-    lateral_signed = jnp.sum(rel_xy * left_vec[None, :], axis=-1)
-    lateral_dist = lateral_signed if side == "left" else -lateral_signed
-    dist2 = jnp.sum(rel_xy * rel_xy, axis=-1)
-
-    lane_ids = lane_points[:, 4]
-    seed_lane_id = lane_ids[seed_idx]
-
-    side_mask = lateral_dist >= jnp.asarray(min_side_distance_m, dtype=jnp.float32)
-    side_mask = side_mask & (lateral_dist < jnp.asarray(max_side_distance_m, dtype=jnp.float32))
-    side_mask = side_mask & (
-        jnp.abs(longitudinal_proj) <= jnp.asarray(max_longitudinal_distance_m, dtype=jnp.float32)
-    )
-    side_mask = side_mask & (lane_ids != seed_lane_id)
-    side_mask = side_mask.at[seed_idx].set(False)
-
-    if not bool(jnp.any(side_mask)):
-        return None
-
-    large = jnp.asarray(1e12, dtype=jnp.float32)
-    side_dist2 = jnp.where(side_mask, dist2, large)
-    candidate_idx = int(jnp.argmin(side_dist2))
-    candidate_dist = jnp.sqrt(dist2[candidate_idx])
-    if float(candidate_dist) > float(max_side_distance_m):
-        return None
-
-    candidate_dir = lane_points[candidate_idx, 2:4]
-    candidate_dir_norm = jnp.maximum(jnp.linalg.norm(candidate_dir), 1e-6)
-    candidate_dir_unit = candidate_dir / candidate_dir_norm
-
-    seed_heading = jnp.arctan2(seed_dir_unit[1], seed_dir_unit[0])
-    candidate_heading = jnp.arctan2(candidate_dir_unit[1], candidate_dir_unit[0])
-    heading_delta = seed_heading - candidate_heading
-    wrapped_delta = jnp.arctan2(jnp.sin(heading_delta), jnp.cos(heading_delta))
-    direction_error = jnp.abs(wrapped_delta)
-    if float(direction_error) > float(max_direction_delta_rad):
-        return None
-
-    return extend_lane_points(
-        scorer, candidate_idx, ray_distance_threshold_m=ray_distance_threshold_m
-    )
-
-
-def unique_lane_ids(lane_ids: List[int]) -> List[int]:
-    seen = set()
-    out = []
-    for lane_id in lane_ids:
-        if lane_id in seen:
-            continue
-        seen.add(lane_id)
-        out.append(lane_id)
-    return out
-
-
-def lane_xy_dir(scorer: Any, lane_id: int) -> Optional[Tuple[jnp.ndarray, jnp.ndarray]]:
-    if scorer._lane_graph is None or scorer.lane_points is None:
-        return None
-    node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lane_id))
-    if node_range is None:
-        return None
-    start, end = node_range
-    if end <= start:
-        return None
-    lane_xy = jnp.asarray(scorer.lane_points[start:end, :2], dtype=jnp.float32)
-    lane_dir = jnp.asarray(scorer.lane_points[start:end, 2:4], dtype=jnp.float32)
-    return lane_xy, lane_dir
-
 
 def choose_best_connected_lane(
     scorer: Any,
@@ -477,7 +337,7 @@ def lane_polyline_from_lane_id(
     lane_chain = lane_chain_ids(
         scorer, int(lane_id), n_hops=int(n_hops), successor_branch=successor_branch
     )
-    lane_chain = unique_lane_ids(lane_chain)
+    lane_chain = list(set(lane_chain))
     polylines: List[jnp.ndarray] = []
     for lane_id_i in lane_chain:
         node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lane_id_i))
@@ -556,16 +416,6 @@ def get_current_lane(
     if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
         return jnp.empty((0, 4), dtype=jnp.float32)
 
-    if scorer._lane_graph is None:
-        return get_current_lane_from_points(
-            scorer=scorer,
-            sim_state=sim_state,
-            timestep=timestep,
-            world_idx=world_idx,
-            ray_distance_threshold_m=0.5,
-            seed_heading_threshold_rad=seed_heading_threshold_rad,
-        )
-
     seed_idx = get_closest_lane_point(
         scorer=scorer,
         sim_state=sim_state,
@@ -592,10 +442,6 @@ def get_side_lane(
     world_idx=0,
     side="left",
     max_side_distance_m=5.0,
-    min_side_distance_m=0.5,
-    max_longitudinal_distance_m=0.5,
-    max_direction_delta_rad=jnp.pi / 6.0,
-    ray_distance_threshold_m=0.5,
     seed_heading_threshold_rad=jnp.pi / 6.0,
     n_hops: int = 2,
     successor_branch: str = "straight",
@@ -604,21 +450,6 @@ def get_side_lane(
         update_lane_points(scorer, sim_state, world_idx)
     if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
         return None
-
-    if scorer._lane_graph is None:
-        return get_side_lane_from_points(
-            scorer=scorer,
-            sim_state=sim_state,
-            timestep=timestep,
-            world_idx=world_idx,
-            side=side,
-            max_side_distance_m=max_side_distance_m,
-            min_side_distance_m=min_side_distance_m,
-            max_longitudinal_distance_m=max_longitudinal_distance_m,
-            max_direction_delta_rad=max_direction_delta_rad,
-            ray_distance_threshold_m=ray_distance_threshold_m,
-            seed_heading_threshold_rad=seed_heading_threshold_rad,
-        )
 
     seed_idx = get_closest_lane_point(
         scorer=scorer,
@@ -666,8 +497,6 @@ def get_left_lane(
         world_idx=world_idx,
         side="left",
         max_side_distance_m=max_side_distance_m,
-        max_direction_delta_rad=max_direction_delta_rad,
-        ray_distance_threshold_m=ray_distance_threshold_m,
         seed_heading_threshold_rad=seed_heading_threshold_rad,
         n_hops=n_hops,
         successor_branch=successor_branch,
@@ -693,34 +522,10 @@ def get_right_lane(
         world_idx=world_idx,
         side="right",
         max_side_distance_m=max_side_distance_m,
-        max_direction_delta_rad=max_direction_delta_rad,
-        ray_distance_threshold_m=ray_distance_threshold_m,
         seed_heading_threshold_rad=seed_heading_threshold_rad,
         n_hops=n_hops,
         successor_branch=successor_branch,
     )
-
-
-def shift_lane_right(scorer: Any, lane, shift_distance_m=3.5):
-    del scorer
-    lane = jnp.asarray(lane, dtype=jnp.float32)
-    if lane.ndim != 2 or lane.shape[1] < 4:
-        raise ValueError(
-            "lane must have shape [num_points, >=4] with x,y,dir_x,dir_y columns, "
-            f"got {lane.shape}"
-        )
-    if int(lane.shape[0]) == 0:
-        return lane
-
-    shifted_lane = lane.copy()
-    dir_xy = shifted_lane[:, 2:4]
-    dir_norm = jnp.maximum(jnp.linalg.norm(dir_xy, axis=-1, keepdims=True), 1e-6)
-    dir_unit = dir_xy / dir_norm
-
-    right_vec = jnp.stack([dir_unit[:, 1], -dir_unit[:, 0]], axis=-1)
-    shifted_xy = shifted_lane[:, :2] + jnp.asarray(shift_distance_m, dtype=jnp.float32) * right_vec
-    shifted_lane = shifted_lane.at[:, :2].set(shifted_xy)
-    return shifted_lane
 
 
 def get_vehicle_front(
@@ -728,32 +533,16 @@ def get_vehicle_front(
     sim_state,
     timestep,
     world_idx=0,
-    same_lane_distance_threshold_m=2.0,
-    max_distance=50,
-    ray_distance_threshold_m=0.5,
+    max_distance=30,
     seed_heading_threshold_rad=jnp.pi / 6.0,
+    vehicle_current_lane_ids: Optional[List[Optional[int]]] = None,
 ):
-    del ray_distance_threshold_m
-    ego_idx = get_ego_idx(scorer, sim_state, world_idx)
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    vehicle_mask = get_vehicle_mask(sim_state, world_idx)
 
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
     object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
-    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
-            f"got {object_xy.shape}"
-        )
-    if object_yaw.ndim != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.yaw must have shape [num_objects, num_timesteps], "
-            f"got {object_yaw.shape}"
-        )
-    if object_valid.ndim != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
-            f"got {object_valid.shape}"
-        )
 
     max_t = int(object_xy.shape[1]) - 1
     t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
@@ -761,43 +550,56 @@ def get_vehicle_front(
     ego_xy = object_xy[ego_idx, t]
     ego_heading = object_yaw[ego_idx, t]
     ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
-    ego_left = jnp.asarray([-ego_forward[1], ego_forward[0]], dtype=jnp.float32)
+    ego_lane_id = None
+    if vehicle_current_lane_ids is not None and ego_idx < len(vehicle_current_lane_ids):
+        ego_lane_id = vehicle_current_lane_ids[ego_idx]
+    if ego_lane_id is None:
+        ego_lane_point = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=ego_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    if ego_lane_id is None:
+        return []
+    ego_lane_ids = lane_chain_ids(
+        scorer, ego_lane_id, n_hops=3, successor_branch="straight"
+    )
 
     num_objects = int(object_xy.shape[0])
-    best_obj_idx = None
-    best_distance = float("inf")
-    same_lane_threshold = float(same_lane_distance_threshold_m)
+    vehicles_front = []
 
     for obj_idx in range(num_objects):
-        if obj_idx == ego_idx:
-            continue
-        if not bool(object_valid[obj_idx, t]):
+        if obj_idx == ego_idx or not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]):
             continue
 
         obj_xy = object_xy[obj_idx, t]
         rel_xy = obj_xy - ego_xy
-        lateral_distance = jnp.abs(jnp.dot(rel_xy, ego_left))
-        if float(lateral_distance) > same_lane_threshold:
-            continue
-
-        obj_heading = object_yaw[obj_idx, t]
-        heading_delta = obj_heading - ego_heading
-        wrapped_delta = jnp.arctan2(jnp.sin(heading_delta), jnp.cos(heading_delta))
-        if float(jnp.abs(wrapped_delta)) > float(seed_heading_threshold_rad):
-            continue
-
-        longitudinal = jnp.dot(rel_xy, ego_forward)
-        if float(longitudinal) <= 0.0:
-            continue
-
         distance = jnp.linalg.norm(rel_xy)
-        if distance > float(max_distance):
+        is_forward = jnp.dot(rel_xy, ego_forward) > 0
+        if distance > float(max_distance) or not bool(is_forward):
             continue
-        if distance < best_distance:
-            best_distance = distance
-            best_obj_idx = obj_idx
 
-    return best_obj_idx
+        obj_lane_id = None
+        if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
+            obj_lane_id = vehicle_current_lane_ids[obj_idx]
+        if obj_lane_id is None:
+            obj_seed_idx = get_closest_lane_point(
+                scorer=scorer,
+                sim_state=sim_state,
+                timestep=timestep,
+                world_idx=world_idx,
+                target_vehicle=obj_idx,
+                seed_heading_threshold_rad=seed_heading_threshold_rad,
+            )
+            obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        if obj_lane_id in ego_lane_ids:
+            vehicles_front.append((obj_idx, distance))
+
+    return vehicles_front
 
 
 def get_vehicle_behind(
@@ -805,32 +607,16 @@ def get_vehicle_behind(
     sim_state,
     timestep,
     world_idx=0,
-    same_lane_distance_threshold_m=2.0,
-    max_distance=50,
-    ray_distance_threshold_m=0.5,
+    max_distance=30,
     seed_heading_threshold_rad=jnp.pi / 6.0,
+    vehicle_current_lane_ids: Optional[List[Optional[int]]] = None,
 ):
-    del ray_distance_threshold_m
-    ego_idx = get_ego_idx(scorer, sim_state, world_idx)
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    vehicle_mask = get_vehicle_mask(sim_state, world_idx)
 
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
     object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
-    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
-            f"got {object_xy.shape}"
-        )
-    if object_yaw.ndim != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.yaw must have shape [num_objects, num_timesteps], "
-            f"got {object_yaw.shape}"
-        )
-    if object_valid.ndim != 2:
-        raise ValueError(
-            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
-            f"got {object_valid.shape}"
-        )
 
     max_t = int(object_xy.shape[1]) - 1
     t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
@@ -838,43 +624,312 @@ def get_vehicle_behind(
     ego_xy = object_xy[ego_idx, t]
     ego_heading = object_yaw[ego_idx, t]
     ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
-    ego_left = jnp.asarray([-ego_forward[1], ego_forward[0]], dtype=jnp.float32)
+    ego_lane_id = None
+    if vehicle_current_lane_ids is not None and ego_idx < len(vehicle_current_lane_ids):
+        ego_lane_id = vehicle_current_lane_ids[ego_idx]
+    if ego_lane_id is None:
+        ego_lane_point = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=ego_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    if ego_lane_id is None:
+        return []
+    ego_lane_ids = lane_chain_ids(
+        scorer, ego_lane_id, n_hops=3, successor_branch="straight"
+    )
 
     num_objects = int(object_xy.shape[0])
-    best_obj_idx = None
-    best_distance = float("inf")
-    same_lane_threshold = float(same_lane_distance_threshold_m)
+    vehicles_behind = []
+
+    for obj_idx in range(num_objects):
+        if obj_idx == ego_idx or not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]):
+            continue
+
+        obj_xy = object_xy[obj_idx, t]
+        rel_xy = obj_xy - ego_xy
+        distance = jnp.linalg.norm(rel_xy)
+        is_behind = jnp.dot(rel_xy, ego_forward) < 0
+        if distance > float(max_distance) or not bool(is_behind):
+            continue
+
+        obj_lane_id = None
+        if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
+            obj_lane_id = vehicle_current_lane_ids[obj_idx]
+        if obj_lane_id is None:
+            obj_seed_idx = get_closest_lane_point(
+                scorer=scorer,
+                sim_state=sim_state,
+                timestep=timestep,
+                world_idx=world_idx,
+                target_vehicle=obj_idx,
+                seed_heading_threshold_rad=seed_heading_threshold_rad,
+            )
+            obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        if obj_lane_id in ego_lane_ids:
+            vehicles_behind.append((obj_idx, distance))
+
+    return vehicles_behind
+
+
+def get_vehicle_left(
+    scorer: Any,
+    sim_state,
+    timestep,
+    world_idx=0,
+    max_distance=30,
+    seed_heading_threshold_rad=jnp.pi / 6.0,
+):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    vehicle_mask = get_vehicle_mask(sim_state, world_idx)
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+
+    ego_xy = object_xy[ego_idx, t]
+    ego_heading = object_yaw[ego_idx, t]
+    ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
+    
+    ego_lane_point = get_closest_lane_point(
+        scorer=scorer,
+        sim_state=sim_state,
+        timestep=timestep,
+        world_idx=world_idx,
+        target_vehicle=ego_idx,
+        seed_heading_threshold_rad=seed_heading_threshold_rad,
+    )
+    ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    if ego_lane_id is None:
+        return []
+    
+    left_lane_cand_ids = get_side_lane_ids(scorer, ego_lane_id, side="left")
+    left_lane_id = pick_best_side_lane(
+        scorer,
+        seed_idx=ego_lane_point,
+        candidate_lane_ids=left_lane_cand_ids,
+        max_side_distance_m=float(max_distance),
+    )
+    left_lane_ids = lane_chain_ids(
+        scorer, left_lane_id, n_hops=3, successor_branch="straight"
+    ) if left_lane_id is not None else []
+
+    num_objects = int(object_xy.shape[0])
+    vehicles_left = []
+
+    for obj_idx in range(num_objects):
+        if obj_idx == ego_idx or not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]):
+            continue
+
+        obj_xy = object_xy[obj_idx, t]
+        rel_xy = obj_xy - ego_xy
+        distance = jnp.linalg.norm(rel_xy)
+        if distance > float(max_distance):
+            continue
+
+        obj_seed_idx = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=obj_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        if obj_lane_id in left_lane_ids:
+            vehicles_left.append((obj_idx, distance))
+
+    return vehicles_left
+
+
+def get_vehicle_right(
+    scorer: Any,
+    sim_state,
+    timestep,
+    world_idx=0,
+    max_distance=30,
+    seed_heading_threshold_rad=jnp.pi / 6.0,
+):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    vehicle_mask = get_vehicle_mask(sim_state, world_idx)
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+
+    ego_xy = object_xy[ego_idx, t]
+    ego_heading = object_yaw[ego_idx, t]
+    ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
+    
+    ego_lane_point = get_closest_lane_point(
+        scorer=scorer,
+        sim_state=sim_state,
+        timestep=timestep,
+        world_idx=world_idx,
+        target_vehicle=ego_idx,
+        seed_heading_threshold_rad=seed_heading_threshold_rad,
+    )
+    ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    if ego_lane_id is None:
+        return []
+    
+    right_lane_cand_ids = get_side_lane_ids(scorer, ego_lane_id, side="right")
+    right_lane_id = pick_best_side_lane(
+        scorer,
+        seed_idx=ego_lane_point,
+        candidate_lane_ids=right_lane_cand_ids,
+        max_side_distance_m=float(max_distance),
+    )
+    right_lane_ids = lane_chain_ids(
+        scorer, right_lane_id, n_hops=3, successor_branch="straight"
+    ) if right_lane_id is not None else []
+
+    num_objects = int(object_xy.shape[0])
+    vehicles_right = []
+
+    for obj_idx in range(num_objects):
+        if obj_idx == ego_idx or not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]):
+            continue
+
+        obj_xy = object_xy[obj_idx, t]
+        rel_xy = obj_xy - ego_xy
+        distance = jnp.linalg.norm(rel_xy)
+        if distance > float(max_distance):
+            continue
+
+        obj_seed_idx = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=obj_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        if obj_lane_id in right_lane_ids:
+            vehicles_right.append((obj_idx, distance))
+
+    return vehicles_right
+
+def get_pedestrian_front(
+    scorer: Any,
+    sim_state,
+    timestep,
+    world_idx=0,
+    max_distance=30,
+):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+    pedestrian_mask = jnp.asarray(get_pedestrian_mask(sim_state, world_idx)).astype(jnp.bool_)
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+
+    ego_xy = object_xy[ego_idx, t]
+    ego_heading = object_yaw[ego_idx, t]
+    ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
+
+    num_objects = int(object_xy.shape[0])
+    pedestrians_front = []
 
     for obj_idx in range(num_objects):
         if obj_idx == ego_idx:
+            continue
+        if not bool(pedestrian_mask[obj_idx]):
             continue
         if not bool(object_valid[obj_idx, t]):
             continue
 
         obj_xy = object_xy[obj_idx, t]
         rel_xy = obj_xy - ego_xy
-        lateral_distance = jnp.abs(jnp.dot(rel_xy, ego_left))
-        if float(lateral_distance) > same_lane_threshold:
-            continue
-
-        obj_heading = object_yaw[obj_idx, t]
-        heading_delta = obj_heading - ego_heading
-        wrapped_delta = jnp.arctan2(jnp.sin(heading_delta), jnp.cos(heading_delta))
-        if float(jnp.abs(wrapped_delta)) > float(seed_heading_threshold_rad):
-            continue
-
-        longitudinal = jnp.dot(rel_xy, ego_forward)
-        if float(longitudinal) >= 0.0:
-            continue
-
         distance = jnp.linalg.norm(rel_xy)
         if distance > float(max_distance):
             continue
-        if distance < best_distance:
-            best_distance = distance
-            best_obj_idx = obj_idx
+        if float(jnp.dot(rel_xy, ego_forward)) <= 0.0:
+            continue
 
-    return best_obj_idx
+        pedestrians_front.append((obj_idx, distance))
+
+    return pedestrians_front
+
+
+def get_traffic_light_state_ahead(
+    scorer: Any,
+    sim_state,
+    timestep,
+    world_idx=0,
+    seed_heading_threshold_rad=jnp.pi / 6.0,
+    successor_branch: str = "straight",
+):
+    if scorer.lane_points is None:
+        update_lane_points(scorer, sim_state, world_idx)
+    if scorer.lane_points is None or int(scorer.lane_points.shape[0]) == 0:
+        return -1
+    if scorer._lane_graph is None:
+        return -1
+
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    ego_seed_idx = get_closest_lane_point(
+        scorer=scorer,
+        sim_state=sim_state,
+        timestep=timestep,
+        world_idx=world_idx,
+        target_vehicle=ego_idx,
+        seed_heading_threshold_rad=seed_heading_threshold_rad,
+    )
+    ego_lane_id = lane_id_from_seed(scorer, ego_seed_idx)
+    if ego_lane_id is None:
+        return -1
+
+    successor_lane_id = choose_best_connected_lane(
+        scorer=scorer,
+        lane_id=ego_lane_id,
+        candidates=[int(x) for x in scorer._successor_lane_ids.get(int(ego_lane_id), [])],
+        direction="forward",
+        successor_branch=successor_branch,
+    )
+    if successor_lane_id is None:
+        return -1
+
+    tls = sim_state.log_traffic_light
+    tl_state = jnp.asarray(tls.state)
+    tl_lane_ids = jnp.asarray(tls.lane_ids)
+    tl_valid = jnp.asarray(tls.valid).astype(jnp.bool_)
+
+    if tl_state.ndim == 3:
+        tl_state = tl_state[world_idx]
+        tl_lane_ids = tl_lane_ids[world_idx]
+        tl_valid = tl_valid[world_idx]
+    elif tl_state.ndim != 2:
+        return -1
+
+    if tl_state.ndim != 2 or tl_lane_ids.ndim != 2 or tl_valid.ndim != 2:
+        return -1
+
+    max_t = int(tl_state.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+
+    lane_mask = tl_valid[:, t] & (jnp.asarray(tl_lane_ids[:, t]) == jnp.asarray(successor_lane_id))
+    if not bool(jnp.any(lane_mask)):
+        return -1
+
+    matching_states = jnp.asarray(tl_state[:, t])[lane_mask]
+    if int(matching_states.shape[0]) == 0:
+        return -1
+    return int(matching_states[0])
 
 
 def is_ahead_of(
@@ -885,7 +940,7 @@ def is_ahead_of(
     world_idx=0,
     min_longitudinal_distance_m=0.0,
 ):
-    ego_idx = get_ego_idx(scorer, sim_state, world_idx)
+    ego_idx = get_ego_idx(sim_state, world_idx)
 
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
@@ -955,7 +1010,7 @@ def on_target_lane(
             f"got {target_lane.shape}"
         )
 
-    ego_idx = get_ego_idx(scorer, sim_state, world_idx)
+    ego_idx = get_ego_idx(sim_state, world_idx)
 
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
@@ -982,7 +1037,7 @@ def on_target_lane(
 
 
 def get_current_speed(scorer: Any, sim_state, timestep, world_idx=0, target_vehicle="ego"):
-    ego_idx = get_ego_idx(scorer, sim_state, world_idx)
+    ego_idx = get_ego_idx(sim_state, world_idx)
     target_idx = ego_idx if target_vehicle == "ego" else int(target_vehicle)
 
     object_vel_x = jnp.asarray(sim_state.log_trajectory.vel_x[world_idx], dtype=jnp.float32)
@@ -1007,3 +1062,25 @@ def get_current_speed(scorer: Any, sim_state, timestep, world_idx=0, target_vehi
     vel_y = object_vel_y[target_idx, t]
     speed = jnp.sqrt(vel_x ** 2 + vel_y ** 2)
     return float(speed)
+
+
+def shift_lane_right(scorer: Any, lane, shift_distance_m=3.5):
+    del scorer
+    lane = jnp.asarray(lane, dtype=jnp.float32)
+    if lane.ndim != 2 or lane.shape[1] < 4:
+        raise ValueError(
+            "lane must have shape [num_points, >=4] with x,y,dir_x,dir_y columns, "
+            f"got {lane.shape}"
+        )
+    if int(lane.shape[0]) == 0:
+        return lane
+
+    shifted_lane = lane.copy()
+    dir_xy = shifted_lane[:, 2:4]
+    dir_norm = jnp.maximum(jnp.linalg.norm(dir_xy, axis=-1, keepdims=True), 1e-6)
+    dir_unit = dir_xy / dir_norm
+
+    right_vec = jnp.stack([dir_unit[:, 1], -dir_unit[:, 0]], axis=-1)
+    shifted_xy = shifted_lane[:, :2] + jnp.asarray(shift_distance_m, dtype=jnp.float32) * right_vec
+    shifted_lane = shifted_lane.at[:, :2].set(shifted_xy)
+    return shifted_lane

@@ -1,3 +1,4 @@
+import os
 import json
 import numpy as np
 from pathlib import Path
@@ -313,3 +314,39 @@ def _summarize_metric(value_bkt: np.ndarray, valid_bkt: np.ndarray) -> dict[str,
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _infer_goals_from_sim_state(sim_state) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Infers one goal per world from ego's last valid log position."""
+    x_bnt = np.asarray(sim_state.log_trajectory.x)
+    y_bnt = np.asarray(sim_state.log_trajectory.y)
+    valid_bnt = np.asarray(sim_state.log_trajectory.valid).astype(bool)
+    is_sdc_bn = np.asarray(sim_state.object_metadata.is_sdc).astype(bool)
+
+    if is_sdc_bn.ndim != 2:
+        raise ValueError(f"Expected is_sdc shape [B,N], got {is_sdc_bn.shape}.")
+
+    batch_size = int(is_sdc_bn.shape[0])
+    ego_indices_b = np.argmax(is_sdc_bn.astype(np.int32), axis=1)
+
+    goal_xy_b2 = np.zeros((batch_size, 2), dtype=np.float32)
+    goal_t_b = np.zeros((batch_size,), dtype=np.int32)
+    for b in range(batch_size):
+        if int(np.sum(is_sdc_bn[b])) != 1:
+            raise ValueError(
+                f"Expected exactly one SDC in world {b}, got {int(np.sum(is_sdc_bn[b]))}."
+            )
+        ego_idx = int(ego_indices_b[b])
+        valid_t = np.flatnonzero(valid_bnt[b, ego_idx])
+        t_goal = int(valid_t[-1]) if valid_t.size > 0 else 0
+        goal_t_b[b] = t_goal
+        goal_xy_b2[b, 0] = float(x_bnt[b, ego_idx, t_goal])
+        goal_xy_b2[b, 1] = float(y_bnt[b, ego_idx, t_goal])
+
+    return goal_xy_b2, goal_t_b, ego_indices_b.astype(np.int32)
+
+
+def _lane_graph_zip_path_for_tfrecord(tfrecord_path: str, lane_graph_dir: str) -> Path:
+    """Maps scenario tfrecord filename to lanegraph shard zip filename."""
+    base = os.path.basename(tfrecord_path)
+    return Path(lane_graph_dir) / f"{base}.lanegraph.zip"
