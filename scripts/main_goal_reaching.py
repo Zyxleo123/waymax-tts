@@ -19,7 +19,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        default="/zfsauton/scratch/mineuih/waymax_rs/checkpoints/goal_timestep_cond/epoch_0100",
+        default="/zfsauton/scratch/mineuih/waymax_rs/checkpoints/goal_timestep_cond/epoch_0300",
     )
     parser.add_argument("--metadata_path", type=str, default=None)
     parser.add_argument(

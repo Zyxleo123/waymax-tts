@@ -758,7 +758,7 @@ class Scorer:
 
         return jnp.where(collision_flags, 0.0, 1.0)
     
-    def compute_offroad_score(self, ego_trajectories, threshold=3.5):
+    def compute_offroad_score(self, ego_trajectories, threshold=3.0):
         '''
         ego_trajectories: [num_ego_trajectories, num_time_steps, 5 (x, y, heading, length, width)]
         '''

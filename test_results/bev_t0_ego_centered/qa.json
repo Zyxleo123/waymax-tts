@@ -1,0 +1,12 @@
+{
+    "left_lane": 0,
+    "right_lane": 2,
+    "front_vehicle": 0,
+    "rear_vehicle": 0,
+    "right_vehicle": 2,
+    "left_vehicle": 0,
+    "traffic_light": false,
+    "pedestrian": true,
+    "left_turn": false,
+    "right_turn": false
+}

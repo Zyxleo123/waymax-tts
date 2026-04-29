@@ -205,16 +205,19 @@ def run(args) -> list[dict[str, Any]]:
             dist_threshold=2.0,
             stop_state=4,
         )
-        tl_violation = tl_violation_timeseries.sum(axis=1) > 0
 
         overlap = np.zeros((len(scenario_indices),), dtype=bool)
         offroad = np.zeros((len(scenario_indices),), dtype=bool)
-        if "overlap" in rollout.metric_timeseries:
-            overlap_timeseries = np.asarray(rollout.metric_timeseries["overlap"])
-            overlap = overlap_timeseries.sum(axis=(1, 2)) > 0
-        if "offroad" in rollout.metric_timeseries:
-            offroad_timeseries = np.asarray(rollout.metric_timeseries["offroad"])
-            offroad = offroad_timeseries.sum(axis=(1, 2)) > 0
+        tl_violation = np.zeros((len(scenario_indices),), dtype=bool)
+        for world_idx in range(len(scenario_indices)):
+            episode_length = goal_eval["reached_step"][world_idx] + 1 if goal_eval["reached_step"][world_idx] >= 0 else tl_violation_timeseries.shape[1]
+            tl_violation[world_idx] = np.asarray(tl_violation_timeseries)[world_idx, :episode_length].sum() > 0
+            if "overlap" in rollout.metric_timeseries:
+                overlap_timeseries = np.asarray(rollout.metric_timeseries["overlap"])
+                overlap[world_idx] = overlap_timeseries[world_idx, :, :episode_length].sum() > 0
+            if "offroad" in rollout.metric_timeseries:
+                offroad_timeseries = np.asarray(rollout.metric_timeseries["offroad"])
+                offroad[world_idx] = offroad_timeseries[world_idx, :, :episode_length].sum() > 0
 
         success = goal_eval["reached"] & (~overlap) & (~offroad) & (~tl_violation)
         reached_all += int(np.sum(goal_eval["reached"]))
