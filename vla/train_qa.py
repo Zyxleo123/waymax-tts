@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 	sys.path.insert(0, str(REPO_ROOT))
 
 from vla.qwen_vla import SceneQwenVLA
-from vla.qa_dataloader import build_qa_dataloader
+from vla.qa_dataloader import build_qa_dataloader, _split_cache_paths, _resolve_cache_paths
 
 
 YES_TOKEN = "yes"
@@ -37,6 +37,7 @@ class TrainQAConfig:
 	qwen_name: str = "Qwen/Qwen3-0.6B"
 	batch_size: int = 1
 	learning_rate: float = 1e-5
+	warmup_steps: int = 1000
 	weight_decay: float = 0.01
 	num_epochs: int = 1
 	max_steps: int | None = None
@@ -54,6 +55,7 @@ class TrainQAConfig:
 	log_every: int = 10
 	save_every: int = 1000
 	eval_num_samples: int = 32
+	validation_fraction: float = 0.2
 	max_prompt_length: int = 128
 	max_answer_length: int = 4
 	num_workers: int = 0
@@ -81,8 +83,8 @@ def _qa_to_text(qa_item: Mapping[str, Any]) -> tuple[str, str]:
 	question = str(qa_item["question"])
 	answer = str(qa_item["answer"])
 	prompt = f"{question}"
-	answer_token = YES_TOKEN if answer == "yes" else NO_TOKEN
-	return prompt, answer_token
+	# answer_token = YES_TOKEN if answer == "yes" else NO_TOKEN
+	return prompt, answer
 
 
 def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
@@ -98,7 +100,7 @@ def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
 	return parsed or None
 
 
-def _flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
+def _flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str], list[str]]:
 	if batch.qa is None:
 		raise ValueError("batch.qa is required for QA training")
 
@@ -106,6 +108,7 @@ def _flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str]
 	flattened_features: dict[str, list[torch.Tensor]] = {key: [] for key in feature_keys}
 	prompts: list[str] = []
 	answers: list[str] = []
+	qa_keys: list[str] = []
 
 	for scenario_idx, scenario_qa in enumerate(batch.qa):
 		qas = scenario_qa["qas"]
@@ -113,11 +116,12 @@ def _flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str]
 			prompt, answer = _qa_to_text(qa_item)
 			prompts.append(prompt)
 			answers.append(answer)
+			qa_keys.append(str(qa_item.get("key", "unknown")))
 			for key in feature_keys:
 				flattened_features[key].append(batch.features[key][scenario_idx])
 
 	stacked_features = {key: torch.stack(values, dim=0) for key, values in flattened_features.items()}
-	return stacked_features, prompts, answers
+	return stacked_features, prompts, answers, qa_keys
 
 
 def _tokenize_text_batch(tokenizer, prompts: list[str], answers: list[str], *, device: torch.device, max_prompt_length: int, max_answer_length: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -151,27 +155,26 @@ def _move_features_to_device(features: Mapping[str, torch.Tensor], device: torch
 	return moved
 
 
-def _parse_generated_yes_no(text: str) -> bool | None:
-	lowered = text.lower()
-	yes_match = re.search(r"<yes>|\byes\b", lowered)
-	no_match = re.search(r"<no>|\bno\b", lowered)
-	if yes_match is None and no_match is None:
-		return None
-	if yes_match is None:
-		return False
-	if no_match is None:
-		return True
-	return yes_match.start() <= no_match.start()
+def _extract_answer_text(text: str) -> str:
+	"""Extract the answer from generated text by stripping whitespace.
+	
+	This works for any answer type: yes/no, numbers, positions, etc.
+	"""
+	return text.strip()
 
 
-def _generate_yes_no_predictions(
+def _generate_predictions(
 	model: SceneQwenVLA,
 	features: Mapping[str, torch.Tensor],
 	prompt_ids: torch.Tensor,
 	*,
 	device: torch.device,
 	max_new_tokens: int,
-) -> list[bool | None]:
+) -> list[str]:
+	"""Generate predictions from the model and return raw text answers.
+	
+	Supports any answer type: yes/no, numbers, multi-token answers, etc.
+	"""
 	scene_tokens = model._tokenize_scene_features(features)
 	text_emb = model.llm.get_input_embeddings()(prompt_ids)
 	scene_tokens = scene_tokens.to(text_emb.dtype)
@@ -190,11 +193,11 @@ def _generate_yes_no_predictions(
 		new_token_ids = generated_ids[:, input_len:]
 	else:
 		new_token_ids = generated_ids
-	decoded = model.tokenizer.batch_decode(new_token_ids, skip_special_tokens=False)
-	return [_parse_generated_yes_no(text) for text in decoded]
+	decoded = model.tokenizer.batch_decode(new_token_ids, skip_special_tokens=True)
+	return [_extract_answer_text(text) for text in decoded]
 
 
-def _evaluate_yes_no_accuracy(
+def _evaluate_answer_accuracy(
 	model: SceneQwenVLA,
 	loader,
 	*,
@@ -203,17 +206,28 @@ def _evaluate_yes_no_accuracy(
 	max_samples: int,
 	max_prompt_length: int,
 	max_answer_length: int,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+	"""Evaluate model accuracy by comparing generated answers with dataset answers.
+	
+	Returns (overall_metrics, per_question_metrics) where:
+	- overall_metrics: {"accuracy": float, "num_samples": float}
+	- per_question_metrics: {question_key: {"accuracy": float, "num_samples": float}, ...}
+	
+	Supports any answer type: yes/no, numbers, positions, etc.
+	Matches are case-insensitive and whitespace-normalized.
+	"""
 	if max_samples <= 0:
-		return {"accuracy": 0.0, "num_samples": 0.0}
+		return {"accuracy": 0.0, "num_samples": 0.0}, {}
 
 	total = 0
 	correct = 0
+	per_question_stats: dict[str, dict[str, int]] = {}  # {q_key: {"correct": int, "total": int}}
+
 	was_training = model.training
 	model.eval()
 	with torch.inference_mode():
 		for batch in loader:
-			features, prompts, answers = _flatten_batch(batch)
+			features, prompts, answers, qa_keys = _flatten_batch(batch)
 			if not prompts:
 				continue
 
@@ -223,6 +237,7 @@ def _evaluate_yes_no_accuracy(
 			if len(prompts) > remaining:
 				prompts = prompts[:remaining]
 				answers = answers[:remaining]
+				qa_keys = qa_keys[:remaining]
 				features = {key: value[:remaining] for key, value in features.items()}
 
 			prompt_ids, _ = _tokenize_text_batch(
@@ -237,7 +252,7 @@ def _evaluate_yes_no_accuracy(
 
 			amp_enabled = device.type == "cuda"
 			with torch.autocast(device_type=device.type, dtype=dtype, enabled=amp_enabled):
-				predictions = _generate_yes_no_predictions(
+				predictions = _generate_predictions(
 					model,
 					features,
 					prompt_ids,
@@ -245,15 +260,42 @@ def _evaluate_yes_no_accuracy(
 					max_new_tokens=max_answer_length,
 				)
 
-			target_is_yes = [answer == YES_TOKEN for answer in answers]
-			correct += sum(int(pred is not None and pred == target) for pred, target in zip(predictions, target_is_yes))
+			# Compare predictions with ground truth answers (normalized)
+			for pred, target, q_key in zip(predictions, answers, qa_keys):
+				pred_norm = pred.lower().strip()
+				target_norm = target.lower().strip()
+				is_correct = pred_norm == target_norm
+				if is_correct:
+					correct += 1
+
+				# Update per-question stats
+				if q_key not in per_question_stats:
+					per_question_stats[q_key] = {"correct": 0, "total": 0}
+				per_question_stats[q_key]["total"] += 1
+				if is_correct:
+					per_question_stats[q_key]["correct"] += 1
+
 			total += len(answers)
 			if total >= max_samples:
 				break
+
 	if was_training:
 		model.train()
-	accuracy = float(correct / total) if total > 0 else 0.0
-	return {"accuracy": accuracy, "num_samples": float(total)}
+
+	# Calculate overall accuracy
+	overall_accuracy = float(correct / total) if total > 0 else 0.0
+	overall_metrics = {"accuracy": overall_accuracy, "num_samples": float(total)}
+
+	# Calculate per-question accuracy
+	per_question_metrics: dict[str, dict[str, float]] = {}
+	for q_key, stats in per_question_stats.items():
+		q_accuracy = float(stats["correct"] / stats["total"]) if stats["total"] > 0 else 0.0
+		per_question_metrics[q_key] = {
+			"accuracy": q_accuracy,
+			"num_samples": float(stats["total"]),
+		}
+
+	return overall_metrics, per_question_metrics
 
 
 def save_checkpoint(output_dir: str, step: int, model: SceneQwenVLA, optimizer: torch.optim.Optimizer, scheduler: Any) -> None:
@@ -279,15 +321,31 @@ def run_training(cfg: TrainQAConfig) -> None:
 	output_dir = Path(cfg.output_dir)
 	output_dir.mkdir(parents=True, exist_ok=True)
 
-	loader = build_qa_dataloader(
+	# Split cache paths into train and validation sets
+	all_cache_paths = _resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
+	train_cache_paths, val_cache_paths = _split_cache_paths(all_cache_paths, cfg.validation_fraction)
+
+	train_loader = build_qa_dataloader(
 		cfg.cache_dir,
-		file_indices=cfg.file_indices,
+		file_indices=None,  # use cache_paths instead
 		qa_dir=cfg.qa_dir,
 		batch_size=cfg.batch_size,
 		shuffle_seed=cfg.shuffle_seed,
 		num_workers=cfg.num_workers,
 		pin_memory=cfg.pin_memory,
+		cache_paths=train_cache_paths,
 	)
+
+	val_loader = build_qa_dataloader(
+		cfg.cache_dir,
+		file_indices=None,  # use cache_paths instead
+		qa_dir=cfg.qa_dir,
+		batch_size=cfg.batch_size,
+		shuffle_seed=cfg.shuffle_seed,
+		num_workers=cfg.num_workers,
+		pin_memory=cfg.pin_memory,
+		cache_paths=val_cache_paths,
+	) if val_cache_paths else None
 
 	model = SceneQwenVLA(qwen_name=cfg.qwen_name)
 	_ensure_tokenizer(model)
@@ -318,9 +376,26 @@ def run_training(cfg: TrainQAConfig) -> None:
 
 	trainable_params = [p for p in model.parameters() if p.requires_grad]
 	optimizer = torch.optim.AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+	
+	# Warmup + optional decay scheduler
 	scheduler = None
-	if cfg.max_steps is not None:
-		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, cfg.max_steps))
+	if cfg.warmup_steps > 0:
+		warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.001, total_iters=cfg.warmup_steps)
+		
+		# If max_steps is set, add cosine annealing after warmup
+		if cfg.max_steps is not None:
+			decay_steps = cfg.max_steps - cfg.warmup_steps
+			if decay_steps > 0:
+				decay_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=decay_steps)
+				scheduler = torch.optim.lr_scheduler.SequentialLR(
+					optimizer, 
+					[warmup_scheduler, decay_scheduler], 
+					milestones=[cfg.warmup_steps]
+				)
+			else:
+				scheduler = warmup_scheduler
+		else:
+			scheduler = warmup_scheduler
 
 	if cfg.dtype == "fp16":
 		scaler = torch.cuda.amp.GradScaler()
@@ -334,8 +409,8 @@ def run_training(cfg: TrainQAConfig) -> None:
 		if cfg.max_steps is not None:
 			epoch_total = max(0, cfg.max_steps - global_step)
 		pbar = tqdm(total=epoch_total, desc=f"epoch {epoch + 1}/{cfg.num_epochs}", unit="step")
-		for batch in loader:
-			features, prompts, answers = _flatten_batch(batch)
+		for batch in train_loader:
+			features, prompts, answers, _ = _flatten_batch(batch)  # _ for qa_keys (unused in training)
 			if not prompts:
 				continue
 
@@ -402,28 +477,50 @@ def run_training(cfg: TrainQAConfig) -> None:
 		if cfg.max_steps is not None and global_step >= cfg.max_steps:
 			break
 
-		eval_metrics = _evaluate_yes_no_accuracy(
-			model,
-			loader,
-			device=device,
-			dtype=dtype,
-			max_samples=cfg.eval_num_samples,
-			max_prompt_length=cfg.max_prompt_length,
-			max_answer_length=cfg.max_answer_length,
-		)
-		tqdm.write(
-			f"epoch={epoch} eval_accuracy={eval_metrics['accuracy']:.4f} "
-			f"eval_samples={int(eval_metrics['num_samples'])}"
-		)
-		if wandb_run is not None:
-			wandb_run.log(
-				{
-					"train/step": global_step,
-					"eval/yes_no_accuracy": eval_metrics["accuracy"],
-					"eval/num_samples": eval_metrics["num_samples"],
-				},
-				step=global_step,
+		# Evaluate on validation set
+		val_metrics = {"accuracy": 0.0, "num_samples": 0.0}
+		val_per_q_metrics = {}
+		if val_loader is not None:
+			val_metrics, val_per_q_metrics = _evaluate_answer_accuracy(
+				model,
+				val_loader,
+				device=device,
+				dtype=dtype,
+				max_samples=cfg.eval_num_samples,
+				max_prompt_length=cfg.max_prompt_length,
+				max_answer_length=cfg.max_answer_length,
 			)
+
+			# Evaluate on training set
+			train_metrics, train_per_q_metrics = _evaluate_answer_accuracy(
+				model,
+				train_loader,
+				device=device,
+				dtype=dtype,
+				max_samples=cfg.eval_num_samples,
+				max_prompt_length=cfg.max_prompt_length,
+				max_answer_length=cfg.max_answer_length,
+			)
+
+			tqdm.write(
+				f"epoch={epoch} "
+				f"train_accuracy={train_metrics['accuracy']:.4f} train_samples={int(train_metrics['num_samples'])} "
+				f"val_accuracy={val_metrics['accuracy']:.4f} val_samples={int(val_metrics['num_samples'])}"
+			)
+			if wandb_run is not None:
+				wandb_log_dict = {
+					"train/step": global_step,
+					"overall_acc/train_accuracy": train_metrics["accuracy"],
+					"overall_acc/val_accuracy": val_metrics["accuracy"],
+				}
+				# Add per-question metrics
+				for q_key, q_metrics in train_per_q_metrics.items():
+					wandb_log_dict[f"train_acc/train_qa_{q_key}_accuracy"] = q_metrics["accuracy"]
+					# wandb_log_dict[f"train/train_qa_{q_key}_samples"] = q_metrics["num_samples"]
+				for q_key, q_metrics in val_per_q_metrics.items():
+					wandb_log_dict[f"val_acc/val_qa_{q_key}_accuracy"] = q_metrics["accuracy"]
+					# wandb_log_dict[f"val/val_qa_{q_key}_samples"] = q_metrics["num_samples"]
+				wandb_run.log(wandb_log_dict, step=global_step)
 
 	save_pretrained = getattr(model.llm, "save_pretrained", None)
 	if callable(save_pretrained):
@@ -450,6 +547,7 @@ def _parse_args() -> TrainQAConfig:
 	parser.add_argument("--learning_rate", type=float, default=5e-5)
 	parser.add_argument("--weight_decay", type=float, default=0.01)
 	parser.add_argument("--num_epochs", type=int, default=1000)
+	parser.add_argument("--warmup_steps", type=int, default=1000)
 	parser.add_argument("--max_steps", type=int, default=None)
 	parser.add_argument("--grad_accum_steps", type=int, default=1)
 	parser.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -464,9 +562,10 @@ def _parse_args() -> TrainQAConfig:
 	parser.add_argument("--dtype", type=str, default="bf16", choices=("bf16", "fp16"))
 	parser.add_argument("--log_every", type=int, default=10)
 	parser.add_argument("--save_every", type=int, default=1000)
-	parser.add_argument("--eval_num_samples", type=int, default=32)
+	parser.add_argument("--eval_num_samples", type=int, default=500)
+	parser.add_argument("--validation_fraction", type=float, default=0.04)
 	parser.add_argument("--max_prompt_length", type=int, default=128)
-	parser.add_argument("--max_answer_length", type=int, default=4)
+	parser.add_argument("--max_answer_length", type=int, default=8)
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
 	args = parser.parse_args()
@@ -486,6 +585,7 @@ def _parse_args() -> TrainQAConfig:
 		weight_decay=args.weight_decay,
 		num_epochs=args.num_epochs,
 		max_steps=args.max_steps,
+		warmup_steps=args.warmup_steps,
 		grad_accum_steps=args.grad_accum_steps,
 		max_grad_norm=args.max_grad_norm,
 		shuffle_seed=args.shuffle_seed,
@@ -500,6 +600,7 @@ def _parse_args() -> TrainQAConfig:
 		log_every=args.log_every,
 		save_every=args.save_every,
 		eval_num_samples=args.eval_num_samples,
+		validation_fraction=args.validation_fraction,
 		max_prompt_length=args.max_prompt_length,
 		max_answer_length=args.max_answer_length,
 		num_workers=args.num_workers,

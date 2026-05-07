@@ -127,50 +127,137 @@ def _load_qa_json(qa_json_path: str) -> dict[str, Any]:
 
 
 def _build_yes_no_question_bank(answers: dict[str, Any]) -> list[dict[str, Any]]:
-	question_specs = [
-		("has_left_lane", "Is there a lane on the left of the ego vehicle?", bool(answers["has_left_lane"])),
-		("has_right_lane", "Is there a lane on the right of the ego vehicle?", bool(answers["has_right_lane"])),
-		(
-			"num_vehicle_left",
-			"Is there any vehicle on the left side of the ego vehicle? \nAnswer (yes or no):",
-			int(answers["num_vehicle_left"]) > 0,
-		),
-		(
-			"num_vehicle_right",
-			"Is there any vehicle on the right side of the ego vehicle? \nAnswer (yes or no):",
-			int(answers["num_vehicle_right"]) > 0,
-		),
-		(
-			"num_vehicle_front_same_lane",
-			"Is there any vehicle in front of the ego vehicle in the same lane? \nAnswer (yes or no):",
-			int(answers["num_vehicle_front_same_lane"]) > 0,
-		),
-		(
-			"num_vehicle_behind_same_lane",
-			"Is there any vehicle behind the ego vehicle in the same lane? \nAnswer (yes or no):",
-			int(answers["num_vehicle_behind_same_lane"]) > 0,
-		),
-		(
-			"num_pedestrian_front",
-			"Is there any pedestrian in front of the ego vehicle? \nAnswer (yes or no):",
-			int(answers["num_pedestrian_front"]) > 0,
-		),
-		(
-			"traffic_light_state",
-			"Is the traffic light in front of the ego vehicle red? \nAnswer (yes or no):",
-			int(answers["traffic_light_state"]) == 4,
-		),
-	]
-
-	return [
-		{
-			"key": key,
-			"question": question,
+	"""Build question-answer pairs based on available keys in the answers dictionary.
+	
+	For each key present in answers, generate an appropriate question with the corresponding answer.
+	Handles both yes/no questions and numeric/float answers.
+	"""
+	qa_list = []
+	
+	# Yes/No questions
+	if "has_left_lane" in answers:
+		is_yes = bool(answers["has_left_lane"])
+		qa_list.append({
+			"key": "has_left_lane",
+			"question": "Is there a lane on the left of the ego vehicle? Answer with yes or no.",
 			"answer": "yes" if is_yes else "no",
-			"label": bool(is_yes),
-		}
-		for key, question, is_yes in question_specs
-	]
+			"label": is_yes,
+		})
+	
+	if "has_right_lane" in answers:
+		is_yes = bool(answers["has_right_lane"])
+		qa_list.append({
+			"key": "has_right_lane",
+			"question": "Is there a lane on the right of the ego vehicle? Answer with yes or no.",
+			"answer": "yes" if is_yes else "no",
+			"label": is_yes,
+		})
+	
+	# Vehicle count questions (numeric)
+	if "num_vehicle_front_same_lane" in answers:
+		num = int(answers["num_vehicle_front_same_lane"])
+		qa_list.append({
+			"key": "num_vehicle_front_same_lane",
+			"question": "Is there any vehicle in front of the ego vehicle in the same lane? Answer with yes or no.",
+			"answer": "yes" if num > 0 else "no",
+			"label": bool(num > 0),
+		})
+	
+	if "num_vehicle_behind_same_lane" in answers:
+		num = int(answers["num_vehicle_behind_same_lane"])
+		qa_list.append({
+			"key": "num_vehicle_behind_same_lane",
+			"question": "Is there any vehicle behind the ego vehicle in the same lane? Answer with yes or no.",
+			"answer": "yes" if num > 0 else "no",
+			"label": bool(num > 0),
+		})
+	
+	if "num_vehicle_left" in answers:
+		num = int(answers["num_vehicle_left"])
+		qa_list.append({
+			"key": "num_vehicle_left",
+			"question": "Is there any vehicle on the left side of the ego vehicle? Answer with yes or no.",
+			"answer": "yes" if num > 0 else "no",
+			"label": bool(num > 0),
+		})
+	
+	if "num_vehicle_right" in answers:
+		num = int(answers["num_vehicle_right"])
+		qa_list.append({
+			"key": "num_vehicle_right",
+			"question": "Is there any vehicle on the right side of the ego vehicle? Answer with yes or no.",
+			"answer": "yes" if num > 0 else "no",
+			"label": bool(num > 0),
+		})
+	
+	if "num_pedestrian_front" in answers:
+		num = int(answers["num_pedestrian_front"])
+		qa_list.append({
+			"key": "num_pedestrian_front",
+			"question": "Is there any pedestrian in front of the ego vehicle? Answer with yes or no.",
+			"answer": "yes" if num > 0 else "no",
+			"label": bool(num > 0),
+		})
+	
+	# Traffic light state
+	if "traffic_light_state" in answers:
+		state = int(answers["traffic_light_state"])
+		is_red = state == 4
+		qa_list.append({
+			"key": "traffic_light_state",
+			"question": "Is the traffic light in front of the ego vehicle red?",
+			"answer": "yes" if is_red else "no",
+			"label": is_red,
+		})
+	
+	# Goal position
+	if "goal_x" in answers and "goal_y" in answers:
+		goal_x = float(answers["goal_x"]) if answers["goal_x"] is not None else 0.0
+		goal_y = float(answers["goal_y"]) if answers["goal_y"] is not None else 0.0
+		qa_list.append({
+			"key": "goal",
+			"question": "What is the relative position of the goal in (x, y) meters? Answer as 'x y' with numbers only. (ex. 10.0 5.0)",
+			"answer": f"{goal_x:.1f} {goal_y:.1f}",
+			"label": (goal_x, goal_y),
+		})
+	
+	# Target vehicle related questions
+	if "target_idx" in answers and "target_type" in answers:
+		target_idx = int(answers["target_idx"])
+		target_type = str(answers["target_type"])
+		
+		# Target speed
+		if "target_speed" in answers and answers["target_speed"] is not None:
+			target_speed = float(answers["target_speed"])
+			qa_list.append({
+				"key": "target_speed",
+				"question": f"What is the current speed of the {target_type} {target_idx} in m/s? Answer with a number only. (ex. 15.0)",
+				"answer": f"{target_speed:.1f}",
+				"label": target_speed,
+			})
+		
+		# Target position
+		if "target_x" in answers and "target_y" in answers:
+			target_x = float(answers["target_x"]) if answers["target_x"] is not None else 0.0
+			target_y = float(answers["target_y"]) if answers["target_y"] is not None else 0.0
+			qa_list.append({
+				"key": "target_position",
+				"question": f"What is the relative position of the {target_type} {target_idx} in (x, y) meters? Answer as 'x y' with numbers only. (ex. 10.0 5.0)",
+				"answer": f"{target_x:.1f} {target_y:.1f}",
+				"label": (target_x, target_y),
+			})
+		
+		# Target heading
+		if "target_heading" in answers and answers["target_heading"] is not None:
+			target_heading = float(answers["target_heading"])
+			qa_list.append({
+				"key": "target_heading",
+				"question": f"What is the relative heading of the {target_type} {target_idx} in radians? Answer with a number only. (ex. 1.5)",
+				"answer": f"{target_heading:.1f}",
+				"label": target_heading,
+			})
+	
+	return random.sample(qa_list, k=1)  # Randomly select one question-answer pair for this scenario
 
 
 def _load_qas_for_scenario(qa_json_path: str, scenario_index: int) -> dict[str, Any]:
@@ -262,6 +349,21 @@ class CacheQADataset(IterableDataset[TorchPreprocessBatch]):
 					yield batch
 
 
+def _split_cache_paths(cache_paths: tuple[str, ...], val_fraction: float = 0.2) -> tuple[tuple[str, ...], tuple[str, ...]]:
+	"""Split cache paths into train and validation sets.
+	
+	Returns (train_paths, val_paths).
+	"""
+	if not cache_paths:
+		return cache_paths, ()
+	num_val = max(1, int(len(cache_paths) * val_fraction))
+	num_train = len(cache_paths) - num_val
+	if num_train == 0:
+		num_train = len(cache_paths) - 1
+		num_val = 1
+	return cache_paths[:num_train], cache_paths[num_train:]
+
+
 def build_qa_dataloader(
 	cache_dir: str,
 	*,
@@ -271,8 +373,10 @@ def build_qa_dataloader(
 	shuffle_seed: int = 0,
 	num_workers: int = 0,
 	pin_memory: bool = False,
+	cache_paths: tuple[str, ...] | None = None,
 ) -> DataLoader[TorchPreprocessBatch]:
-	cache_paths = _resolve_cache_paths(cache_dir, file_indices)
+	if cache_paths is None:
+		cache_paths = _resolve_cache_paths(cache_dir, file_indices)
 	cfg = QACacheLoaderConfig(
 		cache_paths=cache_paths,
 		qa_dir=qa_dir,
@@ -293,6 +397,8 @@ __all__ = [
 	"QACacheLoaderConfig",
 	"CacheQADataset",
 	"build_qa_dataloader",
+	"_split_cache_paths",
+	"_resolve_cache_paths",
 ]
 
 

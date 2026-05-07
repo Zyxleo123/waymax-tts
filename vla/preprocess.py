@@ -202,6 +202,11 @@ def _build_map_features(
 	dir_y_bm = _to_tensor(state.roadgraph_points.dir_y)
 	types_bm = _to_tensor(state.roadgraph_points.types).to(torch.int32)
 	valid_bm = _to_tensor(state.roadgraph_points.valid).to(torch.bool)
+	ids_bm = _to_tensor(state.roadgraph_points.ids).to(torch.int32)
+
+	max_segments = int(cfg.max_segments)
+	max_points_per_segment = int(cfg.max_points_per_segment)
+	feat_dim = 2 + 2 + cfg.num_map_type_classes
 
 	feats = []
 	valids = []
@@ -209,40 +214,106 @@ def _build_map_features(
 	for batch_idx in range(batch_size):
 		xy = torch.stack([x_bm[batch_idx], y_bm[batch_idx]], dim=-1)
 		dirs = torch.stack([dir_x_bm[batch_idx], dir_y_bm[batch_idx]], dim=-1)
+		types = types_bm[batch_idx]
+		ids = ids_bm[batch_idx]
+		valid = valid_bm[batch_idx]
 
 		centered = xy - origin_xy_b2[batch_idx][None, :]
 		dist = torch.linalg.norm(centered, dim=-1)
-		keep = valid_bm[batch_idx] & (dist < cfg.max_range)
+		range_keep = dist < cfg.max_range
 
-		score = torch.where(keep, -dist, torch.full_like(dist, -1e9))
-		k = min(int(cfg.max_map_points), score.shape[0])
-		top_vals, top_idx = torch.topk(score, k)
-		valid_k = top_vals > -1e8
+		valid_and_range = valid & range_keep
+		if not bool(valid_and_range.any()):
+			batch_feat = torch.zeros((max_segments, max_points_per_segment, feat_dim), dtype=torch.float32)
+			batch_valid = torch.zeros((max_segments, max_points_per_segment), dtype=torch.bool)
+			feats.append(batch_feat)
+			valids.append(batch_valid)
+			continue
 
-		xy_k = xy[top_idx]
-		dirs_k = dirs[top_idx]
-		ty_k = types_bm[batch_idx][top_idx]
+		valid_idx = torch.where(valid_and_range)[0]
+		valid_ids = ids[valid_idx]
+		valid_xy = xy[valid_idx]
+		valid_dirs = dirs[valid_idx]
+		valid_types = types[valid_idx]
+		valid_dist = dist[valid_idx]
 
-		xy_rel = _rotate_xy(xy_k - origin_xy_b2[batch_idx][None, :], heading_b[batch_idx]) / cfg.max_range
-		dir_rel = _rotate_xy(dirs_k, heading_b[batch_idx])
-		dir_norm = torch.linalg.norm(dir_rel, dim=-1, keepdim=True)
-		dir_rel = dir_rel / torch.clamp(dir_norm, min=1e-6)
+		unique_ids = torch.unique(valid_ids)
+		segment_order = []
+		for seg_id in unique_ids:
+			seg_mask = valid_ids == seg_id
+			segment_order.append((torch.min(valid_dist[seg_mask]), seg_id))
+		segment_order.sort(key=lambda item: float(item[0].item()))
+		n_segments = min(len(segment_order), max_segments)
 
-		ty_safe = torch.where(
-			(ty_k >= 0) & (ty_k < cfg.num_map_type_classes),
-			ty_k,
-			torch.full_like(ty_k, int(cfg.map_unknown_type_index)),
-		)
-		type_oh = F.one_hot(ty_safe.to(torch.int64), num_classes=cfg.num_map_type_classes).to(torch.float32)
+		segment_feats = []
+		segment_valids = []
 
-		feat_k = torch.cat([xy_rel.to(torch.float32), dir_rel.to(torch.float32), type_oh], dim=-1)
-		feat_k = torch.where(valid_k[:, None], feat_k, torch.zeros_like(feat_k))
+		for seg_idx in range(n_segments):
+			seg_id = segment_order[seg_idx][1]
+			seg_mask = valid_ids == seg_id
 
-		pad = int(cfg.max_map_points) - k
-		feat = F.pad(feat_k, (0, 0, 0, pad))
-		valid = F.pad(valid_k.to(torch.bool), (0, pad), value=False)
-		feats.append(feat)
-		valids.append(valid)
+			seg_xy = valid_xy[seg_mask]
+			seg_dirs = valid_dirs[seg_mask]
+			seg_types = valid_types[seg_mask]
+			seg_dist = valid_dist[seg_mask]
+
+			sorted_dist_idx = torch.argsort(seg_dist)
+			seg_xy = seg_xy[sorted_dist_idx]
+			seg_dirs = seg_dirs[sorted_dist_idx]
+			seg_types = seg_types[sorted_dist_idx]
+
+			n_points_in_seg = min(len(seg_xy), max_points_per_segment)
+			seg_xy_selected = seg_xy[:n_points_in_seg]
+			seg_dirs_selected = seg_dirs[:n_points_in_seg]
+			seg_types_selected = seg_types[:n_points_in_seg]
+
+			xy_rel = _rotate_xy(seg_xy_selected - origin_xy_b2[batch_idx][None, :], heading_b[batch_idx]) / cfg.max_range
+			dir_rel = _rotate_xy(seg_dirs_selected, heading_b[batch_idx])
+			dir_norm = torch.linalg.norm(dir_rel, dim=-1, keepdim=True)
+			dir_rel = dir_rel / torch.clamp(dir_norm, min=1e-6)
+
+			ty_safe = torch.where(
+				(seg_types_selected >= 0) & (seg_types_selected < cfg.num_map_type_classes),
+				seg_types_selected,
+				torch.full_like(seg_types_selected, int(cfg.map_unknown_type_index)),
+			)
+			type_oh = F.one_hot(ty_safe.to(torch.int64), num_classes=cfg.num_map_type_classes).to(torch.float32)
+
+			seg_feat = torch.cat([xy_rel.to(torch.float32), dir_rel.to(torch.float32), type_oh], dim=-1)
+			pad_size = max_points_per_segment - n_points_in_seg
+			if pad_size > 0:
+				seg_feat = F.pad(seg_feat, (0, 0, 0, pad_size))
+
+			seg_valid_mask = torch.cat(
+				[
+					torch.ones(n_points_in_seg, dtype=torch.bool),
+					torch.zeros(pad_size, dtype=torch.bool),
+				],
+				dim=0,
+			)
+
+			segment_feats.append(seg_feat)
+			segment_valids.append(seg_valid_mask)
+
+		if len(segment_feats) > 0:
+			stacked_feats = torch.stack(segment_feats, dim=0)
+			stacked_valids = torch.stack(segment_valids, dim=0)
+		else:
+			stacked_feats = torch.zeros((0, max_points_per_segment, feat_dim), dtype=torch.float32)
+			stacked_valids = torch.zeros((0, max_points_per_segment), dtype=torch.bool)
+
+		seg_pad = max_segments - stacked_feats.shape[0]
+		if seg_pad > 0:
+			batch_feat = torch.zeros((max_segments, max_points_per_segment, feat_dim), dtype=torch.float32)
+			batch_valid = torch.zeros((max_segments, max_points_per_segment), dtype=torch.bool)
+			batch_feat[:stacked_feats.shape[0]] = stacked_feats
+			batch_valid[:stacked_valids.shape[0]] = stacked_valids
+		else:
+			batch_feat = stacked_feats[:max_segments]
+			batch_valid = stacked_valids[:max_segments]
+
+		feats.append(batch_feat)
+		valids.append(batch_valid)
 
 	return torch.stack(feats, dim=0), torch.stack(valids, dim=0)
 
@@ -309,6 +380,7 @@ def _preprocess_single_batch(
 	rng: torch.Generator,
 	cfg: PreprocessConfig,
 	anchor_step_override: int | None = None,
+	goal_step_override: int | None = None,
 ) -> tuple[TorchPreprocessBatch, torch.Generator]:
 	bsz = int(_to_tensor(state.log_trajectory.x).shape[0])
 	ego_idx = extract_ego_index(state)
@@ -332,7 +404,10 @@ def _preprocess_single_batch(
 
 	rng_goal = torch.Generator(device="cpu")
 	rng_goal.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=rng).item()))
-	goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)
+	if goal_step_override is not None:
+		goal_step_b = torch.full((bsz,), int(goal_step_override), dtype=torch.int32)
+	else:
+		goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)
 	goal_x_b = x_bt.gather(1, goal_step_b[:, None])[:, 0]
 	goal_y_b = y_bt.gather(1, goal_step_b[:, None])[:, 0]
 	goal_xy_world = torch.stack([goal_x_b, goal_y_b], dim=-1)
@@ -362,6 +437,14 @@ def _preprocess_single_batch(
 		other_valid_bn=other_valid_bn,
 		cfg=cfg,
 	)
+
+	# Add object type one-hot encoding to other_norm
+	object_types_bn = _to_tensor(state.object_metadata.object_types).to(torch.int32)
+	type_oh = F.one_hot(
+		torch.clamp(object_types_bn, 0, cfg.num_object_types - 1).to(torch.int64),
+		num_classes=cfg.num_object_types,
+	).to(torch.float32)
+	other_norm = torch.cat([other_norm, type_oh], dim=-1)
 
 	origin_xy = ego_resampled_world[:, 0, :2]
 	anchor_yaw = ego_resampled_world[:, 0, 4]
@@ -413,6 +496,7 @@ def preprocess_simulator_state(
 	rng: torch.Generator | int | None,
 	cfg: PreprocessConfig,
 	anchor_step_override: int | None = None,
+	goal_step_override: int | None = None,
 ) -> tuple[TorchPreprocessBatch, torch.Generator]:
 	if _to_tensor(state.log_trajectory.x).ndim < 3:
 		raise ValueError("Expected batched SimulatorState with shape [..., N, T].")
@@ -431,11 +515,12 @@ def preprocess_simulator_state(
 				child_rng,
 				cfg,
 				anchor_step_override,
+				goal_step_override,
 			)
 			batches.append(batch)
 		return _stack_batches(batches), generator
 
-	return _preprocess_single_batch(state, generator, cfg, anchor_step_override)
+	return _preprocess_single_batch(state, generator, cfg, anchor_step_override, goal_step_override)
 
 
 __all__ = [

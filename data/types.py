@@ -20,6 +20,9 @@ class PreprocessConfig:
     predict_horizon: int = 25
     map_unknown_type_index: int = 20
     ema_decay: float = 0.999
+    max_segments: int = 128
+    max_points_per_segment: int = 128
+    num_object_types: int = 8
 
 
 @struct.dataclass

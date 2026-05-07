@@ -72,6 +72,7 @@ def get_vehicle_current_lane_ids(
     distance = jnp.linalg.norm(object_xy[:, t] - ego_xy[t, :], axis=-1)
     num_objects = int(object_xy.shape[0])
     current_lane_ids: List[Optional[int]] = [None] * num_objects
+    closest_lane_point: List[Optional[int]] = [None] * num_objects
     for obj_idx in range(num_objects):
         if not bool(vehicle_mask[obj_idx]) or not bool(object_valid[obj_idx, t]) or distance[obj_idx] > max_distance:
             continue
@@ -83,9 +84,10 @@ def get_vehicle_current_lane_ids(
             target_vehicle=obj_idx,
             seed_heading_threshold_rad=seed_heading_threshold_rad,
         )
+        closest_lane_point[obj_idx] = seed_idx
         current_lane_ids[obj_idx] = lane_id_from_seed(scorer, seed_idx)
 
-    return current_lane_ids
+    return current_lane_ids, closest_lane_point
 
 def lane_xy_dir(scorer: Any, lane_id: int) -> Optional[Tuple[jnp.ndarray, jnp.ndarray]]:
     if scorer._lane_graph is None or scorer.lane_points is None:
@@ -569,6 +571,24 @@ def get_vehicle_front(
         scorer, ego_lane_id, n_hops=3, successor_branch="straight"
     )
 
+    # Precompute ego-lane point indices to limit per-object distance computations
+    ego_lane_point_indices: List[int] = []
+    if scorer._lane_graph is not None:
+        for lid in ego_lane_ids:
+            node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lid))
+            if node_range is None:
+                continue
+            start, end = node_range
+            if end <= start:
+                continue
+            ego_lane_point_indices.extend(list(range(start, end)))
+
+    # If lane points exist for ego lanes, prepare their xy array
+    lane_points_global = None
+    if ego_lane_point_indices:
+        lane_points_global = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
+        ego_lane_xy = lane_points_global[jnp.asarray(ego_lane_point_indices, dtype=jnp.int32), :2]
+
     num_objects = int(object_xy.shape[0])
     vehicles_front = []
 
@@ -584,18 +604,42 @@ def get_vehicle_front(
             continue
 
         obj_lane_id = None
+        # If caller provided current lane ids, use them directly
         if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
             obj_lane_id = vehicle_current_lane_ids[obj_idx]
+
+        # Otherwise, restrict search to ego-lane points only (faster)
         if obj_lane_id is None:
-            obj_seed_idx = get_closest_lane_point(
-                scorer=scorer,
-                sim_state=sim_state,
-                timestep=timestep,
-                world_idx=world_idx,
-                target_vehicle=obj_idx,
-                seed_heading_threshold_rad=seed_heading_threshold_rad,
-            )
-            obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+            if ego_lane_point_indices and lane_points_global is not None:
+                # compute squared distances to ego-lane points and pick the closest global seed index
+                d2 = jnp.sum((ego_lane_xy - obj_xy[None, :]) ** 2, axis=-1)
+                min_idx = int(jnp.argmin(d2))
+                min_distance = float(d2[min_idx] ** 0.5)
+                obj_seed_global = int(ego_lane_point_indices[min_idx])
+                # compute lane heading at the chosen ego-lane point and compare heading delta
+                lane_dir = lane_points_global[obj_seed_global, 2:4]
+                lane_heading = jnp.arctan2(lane_dir[1], lane_dir[0])
+                obj_heading = object_yaw[obj_idx, t]
+                seed_heading_delta = obj_heading - lane_heading
+                seed_heading_delta_wrapped = jnp.arctan2(jnp.sin(seed_heading_delta), jnp.cos(seed_heading_delta))
+                if jnp.abs(seed_heading_delta_wrapped) > jnp.asarray(seed_heading_threshold_rad, dtype=jnp.float32) \
+                    or min_distance > 2.0:
+                    # heading difference too large -> treat as not on ego lane
+                    obj_lane_id = -1
+                else:
+                    obj_lane_id = lane_id_from_seed(scorer, obj_seed_global)
+            else:
+                # fallback to global closest search
+                obj_seed_idx = get_closest_lane_point(
+                    scorer=scorer,
+                    sim_state=sim_state,
+                    timestep=timestep,
+                    world_idx=world_idx,
+                    target_vehicle=obj_idx,
+                    seed_heading_threshold_rad=seed_heading_threshold_rad,
+                )
+                obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+
         if obj_lane_id in ego_lane_ids:
             vehicles_front.append((obj_idx, distance))
 
@@ -642,6 +686,22 @@ def get_vehicle_behind(
     ego_lane_ids = lane_chain_ids(
         scorer, ego_lane_id, n_hops=3, successor_branch="straight"
     )
+    # Precompute ego-lane point indices to limit per-object distance computations
+    ego_lane_point_indices: List[int] = []
+    if scorer._lane_graph is not None:
+        for lid in ego_lane_ids:
+            node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lid))
+            if node_range is None:
+                continue
+            start, end = node_range
+            if end <= start:
+                continue
+            ego_lane_point_indices.extend(list(range(start, end)))
+
+    lane_points_global = None
+    if ego_lane_point_indices:
+        lane_points_global = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
+        ego_lane_xy = lane_points_global[jnp.asarray(ego_lane_point_indices, dtype=jnp.int32), :2]
 
     num_objects = int(object_xy.shape[0])
     vehicles_behind = []
@@ -660,16 +720,34 @@ def get_vehicle_behind(
         obj_lane_id = None
         if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
             obj_lane_id = vehicle_current_lane_ids[obj_idx]
+
         if obj_lane_id is None:
-            obj_seed_idx = get_closest_lane_point(
-                scorer=scorer,
-                sim_state=sim_state,
-                timestep=timestep,
-                world_idx=world_idx,
-                target_vehicle=obj_idx,
-                seed_heading_threshold_rad=seed_heading_threshold_rad,
-            )
-            obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+            if ego_lane_point_indices and lane_points_global is not None:
+                d2 = jnp.sum((ego_lane_xy - obj_xy[None, :]) ** 2, axis=-1)
+                min_idx = int(jnp.argmin(d2))
+                min_distance = float(d2[min_idx] ** 0.5)
+                obj_seed_global = int(ego_lane_point_indices[min_idx])
+                lane_dir = lane_points_global[obj_seed_global, 2:4]
+                lane_heading = jnp.arctan2(lane_dir[1], lane_dir[0])
+                obj_heading = object_yaw[obj_idx, t]
+                seed_heading_delta = obj_heading - lane_heading
+                seed_heading_delta_wrapped = jnp.arctan2(jnp.sin(seed_heading_delta), jnp.cos(seed_heading_delta))
+                if jnp.abs(seed_heading_delta_wrapped) > jnp.asarray(seed_heading_threshold_rad, dtype=jnp.float32) \
+                    or min_distance > 2.0:
+                    obj_lane_id = -1
+                else:
+                    obj_lane_id = lane_id_from_seed(scorer, obj_seed_global)
+            else:
+                obj_seed_idx = get_closest_lane_point(
+                    scorer=scorer,
+                    sim_state=sim_state,
+                    timestep=timestep,
+                    world_idx=world_idx,
+                    target_vehicle=obj_idx,
+                    seed_heading_threshold_rad=seed_heading_threshold_rad,
+                )
+                obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+
         if obj_lane_id in ego_lane_ids:
             vehicles_behind.append((obj_idx, distance))
 
@@ -683,6 +761,8 @@ def get_vehicle_left(
     world_idx=0,
     max_distance=30,
     seed_heading_threshold_rad=jnp.pi / 6.0,
+    vehicle_current_lane_ids: Optional[List[Optional[int]]] = None,
+    closest_lane_points: Optional[List[Optional[int]]] = None,
 ):
     ego_idx = get_ego_idx(sim_state, world_idx)
     vehicle_mask = get_vehicle_mask(sim_state, world_idx)
@@ -697,16 +777,20 @@ def get_vehicle_left(
     ego_xy = object_xy[ego_idx, t]
     ego_heading = object_yaw[ego_idx, t]
     ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
-    
-    ego_lane_point = get_closest_lane_point(
-        scorer=scorer,
-        sim_state=sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-        target_vehicle=ego_idx,
-        seed_heading_threshold_rad=seed_heading_threshold_rad,
-    )
-    ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    ego_lane_id = None
+    if vehicle_current_lane_ids is not None and ego_idx < len(vehicle_current_lane_ids):
+        ego_lane_point = closest_lane_points[ego_idx]
+        ego_lane_id = vehicle_current_lane_ids[ego_idx]
+    else:
+        ego_lane_point = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=ego_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
     if ego_lane_id is None:
         return []
     
@@ -720,6 +804,22 @@ def get_vehicle_left(
     left_lane_ids = lane_chain_ids(
         scorer, left_lane_id, n_hops=3, successor_branch="straight"
     ) if left_lane_id is not None else []
+    # Precompute left-lane point indices for faster per-object checks
+    left_lane_point_indices: List[int] = []
+    if scorer._lane_graph is not None and left_lane_ids:
+        for lid in left_lane_ids:
+            node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lid))
+            if node_range is None:
+                continue
+            start, end = node_range
+            if end <= start:
+                continue
+            left_lane_point_indices.extend(list(range(start, end)))
+
+    lane_points_global = None
+    if left_lane_point_indices:
+        lane_points_global = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
+        left_lane_xy = lane_points_global[jnp.asarray(left_lane_point_indices, dtype=jnp.int32), :2]
 
     num_objects = int(object_xy.shape[0])
     vehicles_left = []
@@ -734,15 +834,37 @@ def get_vehicle_left(
         if distance > float(max_distance):
             continue
 
-        obj_seed_idx = get_closest_lane_point(
-            scorer=scorer,
-            sim_state=sim_state,
-            timestep=timestep,
-            world_idx=world_idx,
-            target_vehicle=obj_idx,
-            seed_heading_threshold_rad=seed_heading_threshold_rad,
-        )
-        obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        obj_lane_id = None
+        if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
+            obj_seed_idx = closest_lane_points[obj_idx]
+            obj_lane_id = vehicle_current_lane_ids[obj_idx]
+
+        if obj_lane_id is None:
+            if left_lane_point_indices and lane_points_global is not None:
+                d2 = jnp.sum((left_lane_xy - obj_xy[None, :]) ** 2, axis=-1)
+                min_idx = int(jnp.argmin(d2))
+                min_distance = float(d2[min_idx] ** 0.5)
+                obj_seed_global = int(left_lane_point_indices[min_idx])
+                lane_dir = lane_points_global[obj_seed_global, 2:4]
+                lane_heading = jnp.arctan2(lane_dir[1], lane_dir[0])
+                obj_heading = object_yaw[obj_idx, t]
+                seed_heading_delta = obj_heading - lane_heading
+                seed_heading_delta_wrapped = jnp.arctan2(jnp.sin(seed_heading_delta), jnp.cos(seed_heading_delta))
+                if jnp.abs(seed_heading_delta_wrapped) > jnp.asarray(seed_heading_threshold_rad, dtype=jnp.float32) or min_distance > 2.0:
+                    obj_lane_id = -1
+                else:
+                    obj_lane_id = lane_id_from_seed(scorer, obj_seed_global)
+            else:
+                obj_seed_idx = get_closest_lane_point(
+                    scorer=scorer,
+                    sim_state=sim_state,
+                    timestep=timestep,
+                    world_idx=world_idx,
+                    target_vehicle=obj_idx,
+                    seed_heading_threshold_rad=seed_heading_threshold_rad,
+                )
+                obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+
         if obj_lane_id in left_lane_ids:
             vehicles_left.append((obj_idx, distance))
 
@@ -756,6 +878,8 @@ def get_vehicle_right(
     world_idx=0,
     max_distance=30,
     seed_heading_threshold_rad=jnp.pi / 6.0,
+    vehicle_current_lane_ids: Optional[List[Optional[int]]] = None,
+    closest_lane_points: Optional[List[Optional[int]]] = None,
 ):
     ego_idx = get_ego_idx(sim_state, world_idx)
     vehicle_mask = get_vehicle_mask(sim_state, world_idx)
@@ -771,15 +895,20 @@ def get_vehicle_right(
     ego_heading = object_yaw[ego_idx, t]
     ego_forward = jnp.asarray([jnp.cos(ego_heading), jnp.sin(ego_heading)], dtype=jnp.float32)
     
-    ego_lane_point = get_closest_lane_point(
-        scorer=scorer,
-        sim_state=sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-        target_vehicle=ego_idx,
-        seed_heading_threshold_rad=seed_heading_threshold_rad,
-    )
-    ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
+    ego_lane_id = None
+    if vehicle_current_lane_ids is not None and ego_idx < len(vehicle_current_lane_ids):
+        ego_lane_point = closest_lane_points[ego_idx]
+        ego_lane_id = vehicle_current_lane_ids[ego_idx]
+    else:
+        ego_lane_point = get_closest_lane_point(
+            scorer=scorer,
+            sim_state=sim_state,
+            timestep=timestep,
+            world_idx=world_idx,
+            target_vehicle=ego_idx,
+            seed_heading_threshold_rad=seed_heading_threshold_rad,
+        )
+        ego_lane_id = lane_id_from_seed(scorer, ego_lane_point)
     if ego_lane_id is None:
         return []
     
@@ -793,6 +922,22 @@ def get_vehicle_right(
     right_lane_ids = lane_chain_ids(
         scorer, right_lane_id, n_hops=3, successor_branch="straight"
     ) if right_lane_id is not None else []
+    # Precompute right-lane point indices for faster per-object checks
+    right_lane_point_indices: List[int] = []
+    if scorer._lane_graph is not None and right_lane_ids:
+        for lid in right_lane_ids:
+            node_range = scorer._lane_graph.lane_id_to_node_range.get(int(lid))
+            if node_range is None:
+                continue
+            start, end = node_range
+            if end <= start:
+                continue
+            right_lane_point_indices.extend(list(range(start, end)))
+
+    lane_points_global = None
+    if right_lane_point_indices:
+        lane_points_global = jnp.asarray(scorer.lane_points, dtype=jnp.float32)
+        right_lane_xy = lane_points_global[jnp.asarray(right_lane_point_indices, dtype=jnp.int32), :2]
 
     num_objects = int(object_xy.shape[0])
     vehicles_right = []
@@ -807,15 +952,36 @@ def get_vehicle_right(
         if distance > float(max_distance):
             continue
 
-        obj_seed_idx = get_closest_lane_point(
-            scorer=scorer,
-            sim_state=sim_state,
-            timestep=timestep,
-            world_idx=world_idx,
-            target_vehicle=obj_idx,
-            seed_heading_threshold_rad=seed_heading_threshold_rad,
-        )
-        obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+        obj_lane_id = None
+        if vehicle_current_lane_ids is not None and obj_idx < len(vehicle_current_lane_ids):
+            obj_seed_idx = closest_lane_points[obj_idx]
+            obj_lane_id = vehicle_current_lane_ids[obj_idx]
+        else:
+            if right_lane_point_indices and lane_points_global is not None:
+                d2 = jnp.sum((right_lane_xy - obj_xy[None, :]) ** 2, axis=-1)
+                min_idx = int(jnp.argmin(d2))
+                min_distance = float(d2[min_idx] ** 0.5)
+                obj_seed_global = int(right_lane_point_indices[min_idx])
+                lane_dir = lane_points_global[obj_seed_global, 2:4]
+                lane_heading = jnp.arctan2(lane_dir[1], lane_dir[0])
+                obj_heading = object_yaw[obj_idx, t]
+                seed_heading_delta = obj_heading - lane_heading
+                seed_heading_delta_wrapped = jnp.arctan2(jnp.sin(seed_heading_delta), jnp.cos(seed_heading_delta))
+                if jnp.abs(seed_heading_delta_wrapped) > jnp.asarray(seed_heading_threshold_rad, dtype=jnp.float32) or min_distance > 2.0:
+                    obj_lane_id = -1
+                else:
+                    obj_lane_id = lane_id_from_seed(scorer, obj_seed_global)
+            else:
+                obj_seed_idx = get_closest_lane_point(
+                    scorer=scorer,
+                    sim_state=sim_state,
+                    timestep=timestep,
+                    world_idx=world_idx,
+                    target_vehicle=obj_idx,
+                    seed_heading_threshold_rad=seed_heading_threshold_rad,
+                )
+                obj_lane_id = lane_id_from_seed(scorer, obj_seed_idx)
+
         if obj_lane_id in right_lane_ids:
             vehicles_right.append((obj_idx, distance))
 
@@ -1063,6 +1229,98 @@ def get_current_speed(scorer: Any, sim_state, timestep, world_idx=0, target_vehi
     speed = jnp.sqrt(vel_x ** 2 + vel_y ** 2)
     return float(speed)
 
+def get_relative_position(scorer: Any, sim_state, timestep, target_vehicle, world_idx=0):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    target_idx = int(target_vehicle)
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_heading = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
+            f"got {object_xy.shape}"
+        )
+    if object_valid.ndim != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
+            f"got {object_valid.shape}"
+        )
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+    if not bool(object_valid[ego_idx, t]) or not bool(object_valid[target_idx, t]):
+        return None
+
+    ego_xy = object_xy[ego_idx, t]
+    ego_heading = object_heading[ego_idx, t]
+    target_xy = object_xy[target_idx, t]
+    # assume the relative position is in the ego's local frame, with x forward and y left
+    cos_h = jnp.cos(ego_heading)
+    sin_h = jnp.sin(ego_heading)
+    rot_matrix = jnp.array([[cos_h, sin_h], [-sin_h, cos_h]], dtype=jnp.float32)
+    rel_xy = target_xy - ego_xy
+    rel_xy = rot_matrix @ rel_xy
+    return tuple(rel_xy.tolist())
+
+def get_relative_heading(scorer: Any, sim_state, timestep, target_vehicle, world_idx=0):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+    target_idx = int(target_vehicle)
+
+    object_heading = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+    if object_heading.ndim != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.yaw must have shape [num_objects, num_timesteps], "
+            f"got {object_heading.shape}"
+        )
+    if object_valid.ndim != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
+            f"got {object_valid.shape}"
+        )
+
+    max_t = int(object_heading.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+    if not bool(object_valid[ego_idx, t]) or not bool(object_valid[target_idx, t]):
+        return None
+
+    ego_heading = object_heading[ego_idx, t]
+    target_heading = object_heading[target_idx, t]
+    rel_heading = target_heading - ego_heading
+    rel_heading = (rel_heading + jnp.pi) % (2 * jnp.pi) - jnp.pi
+    return float(rel_heading)
+
+def get_relative_goal_xy(scorer: Any, sim_state, timestep, world_idx=0):
+    ego_idx = get_ego_idx(sim_state, world_idx)
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
+    object_heading = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx]).astype(jnp.bool_)
+    if object_xy.ndim != 3 or object_xy.shape[-1] != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.xy must have shape [num_objects, num_timesteps, 2], "
+            f"got {object_xy.shape}"
+        )
+    if object_valid.ndim != 2:
+        raise ValueError(
+            "sim_state.log_trajectory.valid must have shape [num_objects, num_timesteps], "
+            f"got {object_valid.shape}"
+        )
+
+    max_t = int(object_xy.shape[1]) - 1
+    t = int(jnp.clip(jnp.asarray(timestep), 0, max_t))
+
+    ego_xy = object_xy[ego_idx, t]
+    ego_heading = object_heading[ego_idx, t]
+    goal_xy = object_xy[ego_idx, max_t]
+    rel_goal_xy = goal_xy - ego_xy
+    cos_h = jnp.cos(ego_heading)
+    sin_h = jnp.sin(ego_heading)
+    rot_matrix = jnp.array([[cos_h, sin_h], [-sin_h, cos_h]], dtype=jnp.float32)
+    rel_goal_xy = rot_matrix @ rel_goal_xy
+
+    return tuple(rel_goal_xy.tolist())
 
 def shift_lane_right(scorer: Any, lane, shift_distance_m=3.5):
     del scorer
