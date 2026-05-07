@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from random import Random
 
 from tqdm import tqdm
 
@@ -34,6 +35,7 @@ from simulation_utils.utils import (
     _lane_graph_zip_path_for_tfrecord,
     _save_json
 )
+from waymax.datatypes.object_state import ObjectTypeIds
 
 def extract_scene_qa(
     sim_state,
@@ -41,80 +43,167 @@ def extract_scene_qa(
     *,
     world_idx: int,
     timestep: int = 0,
+    rng: Random | None = None,
 ) -> dict[str, Any]:
-    left_lane = scorer_helpers.get_left_lane(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    right_lane = scorer_helpers.get_right_lane(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    vehicle_current_lane_ids = scorer_helpers.get_vehicle_current_lane_ids(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    front_vehicles = scorer_helpers.get_vehicle_front(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-        vehicle_current_lane_ids=vehicle_current_lane_ids,
-    )
-    behind_vehicles = scorer_helpers.get_vehicle_behind(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-        vehicle_current_lane_ids=vehicle_current_lane_ids,
-    )
-    left_vehicles = scorer_helpers.get_vehicle_left(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    right_vehicles = scorer_helpers.get_vehicle_right(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    front_pedestrians = scorer_helpers.get_pedestrian_front(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
-    traffic_light_state = scorer_helpers.get_traffic_light_state_ahead(
-        scorer,
-        sim_state,
-        timestep=timestep,
-        world_idx=world_idx,
-    )
+    """
+    한 시나리오에서 랜덤하게 선택된 하나의 질문에 대한 답변만 계산합니다.
+    """
+    if rng is None:
+        rng = Random()
+    
+    # 사용 가능한 질문 목록
+    questions = [
+        "has_left_lane",
+        "has_right_lane",
+        "num_vehicle_front_same_lane",
+        "num_vehicle_behind_same_lane",
+        "num_vehicle_left",
+        "num_vehicle_right",
+        "num_pedestrian_front",
+        "traffic_light_state",
+        "goal",
+        "target_vehicle",
+    ]
+    
+    # 랜덤하게 질문 선택
+    selected_question = rng.choice(questions)
+    
+    # 선택된 질문에 필요한 데이터만 계산
+    qa = {}
+    
+    if selected_question == "has_left_lane":
+        left_lane = scorer_helpers.get_left_lane(
+            scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        )
+        answer = bool(left_lane is not None)
+        qa["has_left_lane"] = answer
+    
+    elif selected_question == "has_right_lane":
+        right_lane = scorer_helpers.get_right_lane(
+            scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        )
+        answer = bool(right_lane is not None)
+        qa["has_right_lane"] = answer
+    
+    elif selected_question in ["num_vehicle_front_same_lane", "num_vehicle_behind_same_lane", 
+                               "num_vehicle_left", "num_vehicle_right"]:
+        # vehicle_current_lane_ids, closest_lane_points = scorer_helpers.get_vehicle_current_lane_ids(
+        #     scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        # )
+        if selected_question == "num_vehicle_front_same_lane":
+            front_vehicles = scorer_helpers.get_vehicle_front(
+                scorer, sim_state, timestep=timestep, world_idx=world_idx,
+                # vehicle_current_lane_ids=vehicle_current_lane_ids,
+            )
+            answer = len(front_vehicles)
+            qa["num_vehicle_front_same_lane"] = answer
+        elif selected_question == "num_vehicle_behind_same_lane":
+            behind_vehicles = scorer_helpers.get_vehicle_behind(
+                scorer, sim_state, timestep=timestep, world_idx=world_idx,
+                # vehicle_current_lane_ids=vehicle_current_lane_ids,
+            )
+            answer = len(behind_vehicles)
+            qa["num_vehicle_behind_same_lane"] = answer
+        elif selected_question == "num_vehicle_left":
+            left_vehicles = scorer_helpers.get_vehicle_left(
+                scorer, sim_state, timestep=timestep, world_idx=world_idx,
+                # vehicle_current_lane_ids=vehicle_current_lane_ids,
+                # closest_lane_points=closest_lane_points,
+            )
+            answer = len(left_vehicles)
+            qa["num_vehicle_left"] = answer
+        elif selected_question == "num_vehicle_right":
+            right_vehicles = scorer_helpers.get_vehicle_right(
+                scorer, sim_state, timestep=timestep, world_idx=world_idx,
+                # vehicle_current_lane_ids=vehicle_current_lane_ids,
+                # closest_lane_points=closest_lane_points,
+            )
+            answer = len(right_vehicles)
+            qa["num_vehicle_right"] = answer
+    
+    elif selected_question == "num_pedestrian_front":
+        front_pedestrians = scorer_helpers.get_pedestrian_front(
+            scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        )
+        answer = len(front_pedestrians)
+        qa["num_pedestrian_front"] = answer
 
-    answers = {
-        "has_left_lane": bool(left_lane is not None),
-        "has_right_lane": bool(right_lane is not None),
-        "num_vehicle_front_same_lane": len(front_vehicles),
-        "num_vehicle_behind_same_lane": len(behind_vehicles),
-        "num_vehicle_left": len(left_vehicles),
-        "num_vehicle_right": len(right_vehicles),
-        "num_pedestrian_front": len(front_pedestrians),
-        "traffic_light_state": int(traffic_light_state),
-    }
+    elif selected_question == "traffic_light_state":
+        traffic_light_state = scorer_helpers.get_traffic_light_state_ahead(
+            scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        )
+        answer = int(traffic_light_state)
+        qa["traffic_light_state"] = answer
+
+    elif selected_question == "goal":
+        goal_xy = scorer_helpers.get_relative_goal_xy(
+            scorer, sim_state, timestep=timestep, world_idx=world_idx,
+        )
+        answer = float(goal_xy[0]) if goal_xy is not None else None
+        qa["goal_x"] = answer
+        answer = float(goal_xy[1]) if goal_xy is not None else None
+        qa["goal_y"] = answer
+
+    elif selected_question == "target_vehicle":
+        target_idx, target_type = _sample_target_vehicle(
+            scorer, sim_state, world_idx=world_idx, timestep=timestep,
+            max_distance=30.0, rng=jax.random.PRNGKey(0),
+        )
+        target_xy = scorer_helpers.get_relative_position(
+            scorer, sim_state, world_idx=world_idx, timestep=timestep, target_vehicle=target_idx
+        )
+        qa["target_idx"] = target_idx
+        qa["target_type"] = target_type
+        qa["target_x"] = float(target_xy[0]) if target_xy is not None else None
+        qa["target_y"] = float(target_xy[1]) if target_xy is not None else None
+        target_heading = scorer_helpers.get_relative_heading(
+            scorer, sim_state, world_idx=world_idx, timestep=timestep, target_vehicle=target_idx
+        )
+        qa["target_heading"] = float(target_heading) if target_heading is not None else None
+        target_speed = scorer_helpers.get_current_speed(
+            scorer, sim_state, world_idx=world_idx, timestep=timestep, target_vehicle=target_idx
+        )
+        qa["target_speed"] = float(target_speed) if target_speed is not None else None
 
     return {
         "timestep": int(timestep),
-        "answers": answers,
+        "answers": qa,
     }
 
+def _sample_target_vehicle(
+    scorer: Scorer,
+    sim_state,
+    *,
+    world_idx: int,
+    timestep: int,
+    max_distance: float = 30.0,
+    rng: jax.random.PRNGKey,
+):
+    # sample a target vehicle's index from the vehicles within max_distance.
+    ego_idx = scorer_helpers.get_ego_idx(sim_state, world_idx)
+    ego_mask = np.zeros(sim_state.log_trajectory.xy.shape[1], dtype=bool)
+    ego_mask[ego_idx] = True
+
+    object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx, :, timestep])
+    object_valid = jnp.asarray(sim_state.log_trajectory.valid[world_idx, :, timestep]).astype(bool)
+    object_type = jnp.asarray(sim_state.object_metadata.object_types[world_idx])
+    vehicle_mask = (object_type == ObjectTypeIds.VEHICLE.value)
+    pedestrian_mask = (object_type == ObjectTypeIds.PEDESTRIAN.value)
+    object_valid = object_valid & (vehicle_mask | pedestrian_mask)
+    
+    ego_xy = object_xy[ego_idx]
+    distances = jnp.linalg.norm(object_xy - ego_xy, axis=-1)
+    candidate_mask = (distances <= max_distance) & object_valid & (~ego_mask)
+    candidate_indices = jnp.where(candidate_mask)[0]
+    if candidate_indices.size == 0:
+        return int(ego_idx), "ego"
+    sampled_idx = jax.random.choice(rng, candidate_indices)
+    sampled_type_value = int(object_type[sampled_idx])
+    if sampled_type_value == ObjectTypeIds.VEHICLE.value:
+        sampled_type = "vehicle"
+    elif sampled_type_value == ObjectTypeIds.PEDESTRIAN.value:
+        sampled_type = "pedestrian"
+    return int(sampled_idx), sampled_type
 
 def _transform_world_to_ego(xy_t2: np.ndarray, ego_xy_2: np.ndarray, ego_yaw: float, align_heading: bool) -> np.ndarray:
     rel_xy = np.asarray(xy_t2, dtype=np.float32) - np.asarray(ego_xy_2, dtype=np.float32)[None, :]
@@ -338,7 +427,8 @@ def run(args) -> list[Path]:
         lane_graph_zip_path = _lane_graph_zip_path_for_tfrecord(str(tfrecord_path), lane_graph_dir)
         lane_graph_store = LaneGraphShardStore(lane_graph_zip_path.as_posix())
         if (output_dir / f"{Path(tfrecord_path).name}.scenario_00000.t0.png").exists():
-            continue
+            if not args.overwrite:
+                continue
 
         try:
             first_state_batch = _load_scenario_state_fast(ds_cfg, 0)
@@ -359,7 +449,7 @@ def run(args) -> list[Path]:
         scenario_qas: dict[int, dict[str, Any]] = {}
         curr_scenario_index = 0
         result_path = output_dir / f"{Path(tfrecord_path).name}.json"
-        pbar = tqdm(desc=f"Extracting QA for {Path(tfrecord_path).name}", unit="scenario")
+        pbar = tqdm(desc=f"Extracting QA for {Path(os.path.basename(tfrecord_path)).name}", unit="scenario")
         while True:
             try:
                 sim_state = _load_scenario_state_fast(ds_cfg, curr_scenario_index)
@@ -372,11 +462,15 @@ def run(args) -> list[Path]:
                 if graph is not None:
                     scorer.set_lane_graph(graph)
             scorer_helpers.update_lane_points(scorer, sim_state, world_idx=0)
+            
+            # 각 시나리오마다 다른 시드를 사용해서 다른 질문을 선택
+            rng = Random(curr_scenario_index)
             scenario_qas[int(curr_scenario_index)] = extract_scene_qa(
                 sim_state,
                 scorer,
                 world_idx=0,
                 timestep=0,
+                rng=rng,
             )
             _save_json(result_path, scenario_qas)
 
@@ -400,6 +494,7 @@ if __name__ == "__main__":
     parser.add_argument("--back_x", type=float, default=30.0, help="Distance behind the ego vehicle to include in the BEV renderings.")
     parser.add_argument("--left_y", type=float, default=30.0, help="Distance to the left of the ego vehicle to include in the BEV renderings.")
     parser.add_argument("--right_y", type=float, default=30.0, help="Distance to the right of the ego vehicle to include in the BEV renderings.")
+    parser.add_argument("--overwrite", action="store_true", help="Whether to overwrite existing QA JSON files and scenario preview images if they already exist.")
     args = parser.parse_args()
 
     written_json_paths = run(args)

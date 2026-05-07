@@ -92,7 +92,7 @@ def _build_cache_for_shard(
 
 	storage: dict[str, list[np.ndarray]] = {}
 	processed_batches = 0
-	pbar = tqdm(desc=f"Processing {tfrecord_path}", unit="batch")
+	pbar = tqdm(desc=f"Processing {os.path.basename(tfrecord_path)}", unit="batch")
 	scenario_index = 0
 	while True:
 		try:
@@ -104,6 +104,7 @@ def _build_cache_for_shard(
 			generator,
 			qa_cfg.preprocess_cfg,
 			anchor_step_override=base_cfg.anchor_step_override,
+			goal_step_override=90
 		)
 		_append_batch(storage, "features", batch.features)
 		_append_batch(storage, "aux", batch.aux)
@@ -117,7 +118,7 @@ def _build_cache_for_shard(
 		raise RuntimeError(f"No batches were produced for shard: {tfrecord_path}")
 
 	flat_arrays = _concat_storage(storage)
-	flat_arrays["tfrecord_path"] = np.array(tfrecord_path)
+	flat_arrays["tfrecord_path"] = np.array(os.path.basename(tfrecord_path))
 	flat_arrays["num_batches"] = np.array(processed_batches, dtype=np.int32)
 
 	output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -58,13 +58,73 @@ class PointNet(nn.Module):
         return self.mlp_out(h)
 
 
+class SelfAttention(nn.Module):
+    def __init__(self, feature_dim: int, n_layer: int = 2, n_heads: int | None = 4, dropout: float = 0.0, hidden=512) -> None:
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        self.n_layer = int(n_layer)
+        self.n_heads = int(n_heads)
+
+        self.layers = nn.ModuleList()
+        for _ in range(self.n_layer):
+            layer = nn.Module()
+            # multi-head attention: embed_dim == feature_dim
+            layer.attn = nn.MultiheadAttention(self.feature_dim, self.n_heads, dropout=dropout, batch_first=False)
+            layer.ln1 = nn.LayerNorm(self.feature_dim)
+            # feed-forward
+            layer.ffn = nn.Sequential(
+                nn.Linear(self.feature_dim, hidden),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden, self.feature_dim),
+                nn.Dropout(dropout),
+            )
+            layer.ln2 = nn.LayerNorm(self.feature_dim)
+            self.layers.append(layer)
+
+    def forward(self, x: torch.Tensor, valid: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Apply stacked self-attention layers.
+
+        x: [B, T, D]
+        valid: [B, T] boolean mask where True indicates valid tokens. If None,
+            all tokens are treated as valid.
+        """
+        if x.ndim != 3:
+            raise ValueError(f"Input x must be 3D [B, T, D], got {tuple(x.shape)}")
+
+        batch_size, token_len, feat = x.shape
+        if feat != self.feature_dim:
+            raise ValueError(f"feature_dim mismatch: module expects {self.feature_dim}, got {feat}")
+
+        if valid is None:
+            key_padding_mask = None
+        else:
+            if valid.shape != (batch_size, token_len):
+                raise ValueError("valid mask must have shape [B, T]")
+            # MultiheadAttention expects key_padding_mask with True for positions to ignore
+            key_padding_mask = ~valid.bool()
+
+        # transpose to [T, B, D] for nn.MultiheadAttention (unless batch_first True)
+        # we constructed attn with batch_first=False, so transpose
+        h = x.transpose(0, 1).contiguous()
+
+        for layer in self.layers:
+            # Self-attention: query=key=value=h
+            attn_out, _ = layer.attn(h, h, h, key_padding_mask=key_padding_mask)
+            h = layer.ln1(h + attn_out)
+            ffn_out = layer.ffn(h.transpose(0, 1)).transpose(0, 1)
+            h = layer.ln2(h + ffn_out)
+
+        return h.transpose(0, 1).contiguous()
+
+
 class SceneQwenVLA(nn.Module):
     def __init__(
         self,
         qwen_name="Qwen/Qwen3-0.6B",
         ego_dim: int = 5,
         goal_dim: int = 3,
-        other_dim: int = 7,
+        other_dim: int = 15,
         map_dim: int = 25,
         tl_dim: int = 9,
     ):
@@ -83,11 +143,14 @@ class SceneQwenVLA(nn.Module):
 
         hidden = self.llm.config.hidden_size
 
+        self.other_pos_embedding = nn.Parameter(torch.zeros(1, 128, hidden))  # max 128 other agents
+        self.other_pos_embedding.data.uniform_(-0.01, 0.01)
         self.ego_tokenizer = MLP([ego_dim, hidden, hidden, hidden])
         self.goal_tokenizer = MLP([goal_dim, hidden, hidden, hidden])
-        self.other_tokenizer = PointNet(other_dim, hidden)
+        self.other_tokenizer = MLP([other_dim, hidden, hidden, hidden])
+        self.tl_tokenizer = MLP([tl_dim, hidden, hidden, hidden])
         self.map_tokenizer = PointNet(map_dim, hidden)
-        self.tl_tokenizer = PointNet(tl_dim, hidden)
+        self.attention = SelfAttention(hidden, n_layer=4, n_heads=4)
 
     def _tokenize_scene_features(self, input_features: Mapping[str, torch.Tensor]) -> torch.Tensor:
         ego_state = input_features["ego_state"]
@@ -105,14 +168,30 @@ class SceneQwenVLA(nn.Module):
 
         goal_input = torch.cat([goal_xy, remaining_timesteps], dim=-1)
 
+        batch_size, num_others, other_dim = other_states.shape
+        _, num_map_segments, num_points_per_segment, map_dim = map_features.shape
+        _, num_tl, tl_dim = traffic_light_features.shape
+
         ego_token = self.ego_tokenizer(ego_state).unsqueeze(1)
         goal_token = self.goal_tokenizer(goal_input).unsqueeze(1)
-        other_token = self.other_tokenizer(other_states, other_valid).unsqueeze(1)
-        map_token = self.map_tokenizer(map_features, map_valid).unsqueeze(1)
-        tl_token = self.tl_tokenizer(traffic_light_features, traffic_light_valid).unsqueeze(1)
-
-        return torch.cat([ego_token, goal_token, other_token, map_token, tl_token], dim=1)
-
+        other_token = self.other_tokenizer(other_states.reshape(-1, other_dim)).reshape(batch_size, num_others, -1)
+        other_token = other_token + self.other_pos_embedding[:, :num_others, :]
+        map_token = self.map_tokenizer(
+            map_features.reshape(-1, num_points_per_segment, map_dim),
+            map_valid.reshape(-1, num_points_per_segment),
+        ).reshape(batch_size, num_map_segments, -1)
+        tl_token = self.tl_tokenizer(traffic_light_features.reshape(-1, tl_dim)).reshape(batch_size, num_tl, -1)
+        x = torch.cat([ego_token, goal_token, other_token, map_token, tl_token], dim=1)
+        x_valid = torch.cat(
+            [
+                torch.ones((batch_size, 2), dtype=torch.bool, device=ego_state.device),  # ego and goal always valid
+                other_valid,
+                map_valid.any(dim=2),  # segment valid if any point is valid
+                traffic_light_valid,
+            ], dim=1
+        )
+        x = self.attention(x, x_valid)
+        return x
 
     def freeze_llm(self):
         for p in self.llm.parameters():
