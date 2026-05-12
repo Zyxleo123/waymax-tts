@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 	sys.path.insert(0, str(REPO_ROOT))
 
 from vla.qwen_vla import SceneQwenVLA
+from vla.gemma_vla import SceneGemmaVLA
 from vla.qa_dataloader import build_qa_dataloader, _split_cache_paths, _resolve_cache_paths
 
 
@@ -34,7 +35,9 @@ class TrainQAConfig:
 	wandb_run_name: str | None = None
 	wandb_entity: str | None = None
 	wandb_mode: str = "online"
+	model_type: str = "qwen"
 	qwen_name: str = "Qwen/Qwen3-0.6B"
+	gemma_name: str = "Gemma4-2B"
 	batch_size: int = 1
 	learning_rate: float = 1e-5
 	warmup_steps: int = 1000
@@ -74,7 +77,7 @@ def _resolve_dtype(dtype_name: str) -> torch.dtype:
 	raise ValueError(f"Unsupported dtype: {dtype_name}")
 
 
-def _ensure_tokenizer(model: SceneQwenVLA) -> None:
+def _ensure_tokenizer(model: Any) -> None:
 	if model.tokenizer.pad_token is None:
 		model.tokenizer.pad_token = model.tokenizer.eos_token
 
@@ -111,7 +114,7 @@ def _flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str]
 	qa_keys: list[str] = []
 
 	for scenario_idx, scenario_qa in enumerate(batch.qa):
-		qas = scenario_qa["qas"]
+		qas = scenario_qa["qas"][:1]
 		for qa_item in qas:
 			prompt, answer = _qa_to_text(qa_item)
 			prompts.append(prompt)
@@ -164,7 +167,7 @@ def _extract_answer_text(text: str) -> str:
 
 
 def _generate_predictions(
-	model: SceneQwenVLA,
+	model: Any,
 	features: Mapping[str, torch.Tensor],
 	prompt_ids: torch.Tensor,
 	*,
@@ -198,7 +201,7 @@ def _generate_predictions(
 
 
 def _evaluate_answer_accuracy(
-	model: SceneQwenVLA,
+	model: Any,
 	loader,
 	*,
 	device: torch.device,
@@ -298,7 +301,7 @@ def _evaluate_answer_accuracy(
 	return overall_metrics, per_question_metrics
 
 
-def save_checkpoint(output_dir: str, step: int, model: SceneQwenVLA, optimizer: torch.optim.Optimizer, scheduler: Any) -> None:
+def save_checkpoint(output_dir: str, step: int, model: Any, optimizer: torch.optim.Optimizer, scheduler: Any) -> None:
 	ckpt_dir = Path(output_dir) / "checkpoints"
 	ckpt_dir.mkdir(parents=True, exist_ok=True)
 	ckpt_path = ckpt_dir / f"step_{step:08d}.pt"
@@ -347,7 +350,13 @@ def run_training(cfg: TrainQAConfig) -> None:
 		cache_paths=val_cache_paths,
 	) if val_cache_paths else None
 
-	model = SceneQwenVLA(qwen_name=cfg.qwen_name)
+	if cfg.model_type == "qwen":
+		model = SceneQwenVLA(qwen_name=cfg.qwen_name)
+	elif cfg.model_type == "gemma":
+		model = SceneGemmaVLA(gemma_name=cfg.gemma_name)
+	else:
+		raise ValueError(f"Unknown model_type: {cfg.model_type}")
+
 	_ensure_tokenizer(model)
 	if cfg.use_gradient_checkpointing and hasattr(model.llm, "gradient_checkpointing_enable"):
 		model.llm.gradient_checkpointing_enable()
@@ -542,7 +551,9 @@ def _parse_args() -> TrainQAConfig:
 	parser.add_argument("--wandb_run_name", type=str, default=None)
 	parser.add_argument("--wandb_entity", type=str, default=None)
 	parser.add_argument("--wandb_mode", type=str, default="online", choices=("online", "offline", "disabled"))
+	parser.add_argument("--model_type", type=str, default="qwen", choices=["qwen", "gemma"])
 	parser.add_argument("--qwen_name", type=str, default="Qwen/Qwen3-0.6B")
+	parser.add_argument("--gemma_name", type=str, default="google/gemma-4-E2B-it")
 	parser.add_argument("--batch_size", type=int, default=16)
 	parser.add_argument("--learning_rate", type=float, default=5e-5)
 	parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -579,7 +590,9 @@ def _parse_args() -> TrainQAConfig:
 		wandb_run_name=args.wandb_run_name,
 		wandb_entity=args.wandb_entity,
 		wandb_mode=args.wandb_mode,
+		model_type=args.model_type,
 		qwen_name=args.qwen_name,
+		gemma_name=args.gemma_name,
 		batch_size=args.batch_size,
 		learning_rate=args.learning_rate,
 		weight_decay=args.weight_decay,
