@@ -15,7 +15,7 @@ from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 from model.diffusion.diffusion_policy import DiffusionPolicy
-from train.types import PreprocessConfig
+from data.types import PreprocessConfig
 
 
 def configure_jax_compilation_cache(cache_dir: str) -> None:
@@ -34,10 +34,13 @@ def build_training_components(args):
         ego_range=args.ego_range,
         max_velocity=args.max_velocity,
         max_width=args.max_width,
-        max_map_points=args.max_map_points,
         max_tl_points=args.max_tl_points,
         num_map_type_classes=args.num_map_type_classes,
         predict_horizon=args.predict_horizon,
+        max_segments=args.max_num_segments,
+        max_points_per_segment=args.max_points_per_segment,
+        num_object_types=args.num_object_types,
+        inst_dim=args.inst_dim,
     )
     model = DiffusionPolicy(
         target_dim=args.target_dim,
