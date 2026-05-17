@@ -116,7 +116,7 @@ def check_goal_reaching(
     sim_state,
     goal_xy_b2: jnp.ndarray,
     *,
-    goal_threshold_m: float,
+    goal_threshold_m: float = 2.0,
 ) -> dict[str, jnp.ndarray]:
     if jnp.asarray(goal_xy_b2).ndim != 2:
         raise ValueError(f"Expected goal_xy shape [B,2], got {jnp.asarray(goal_xy_b2).shape}.")
@@ -233,6 +233,7 @@ def check_traffic_light_violation(
         next_signed_t = jnp.sum((ego_xy_t2[1:] - target_tl_lane_start_pose[None, :2]) * lane_dir_t[None, :], axis=-1)
         crossed_red_t = red_mask_t[:-1] & (current_signed_t < 0.0) & (next_signed_t >= 0.0)
         violation_bt = violation_bt.at[world_idx, 1:horizon].set(crossed_red_t)
+    violation_b = jnp.any(violation_bt, axis=1)
 
     violation_step_b = jnp.full((batch_size,), -1, dtype=jnp.int32)
     for world_idx in range(batch_size):
@@ -241,6 +242,6 @@ def check_traffic_light_violation(
             violation_step_b = violation_step_b.at[world_idx].set(jnp.int32(hit_steps[0]))
 
     return {
-        "violation": violation_bt,
+        "violation": violation_b,
         "violation_step": violation_step_b,
     }

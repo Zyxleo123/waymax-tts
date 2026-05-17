@@ -23,7 +23,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        default="/zfsauton/scratch/mineuih/waymax_rs/checkpoints/goal_timestep_cond/epoch_0300",
+        default="/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_diffusion/pretrain_diffusion_20260517_044407/latest/",
     )
     parser.add_argument(
         "--tfrecord_dir",
@@ -56,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main(args: argparse.Namespace) -> None:
     args.tfrecord_dir = os.path.join(args.tfrecord_dir, args.split)
-    args.output_dir = os.path.join(args.exp_dir, f"{args.split}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    args.output_dir = os.path.join(args.exp_dir, f"simulation_results_split_{args.split}")
     
     from planner.diffusion_planner import DiffusionPlanner
     inference = load_model_for_inference(

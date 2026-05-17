@@ -52,7 +52,6 @@ class ResBlock1d(nnx.Module):
         self.skip = Identity1d() if in_ch == out_ch else nnx.Conv(in_features=in_ch, out_features=out_ch, kernel_size=(1,), padding="SAME", rngs=rngs)
         # Cross-attention for condition integration
         self.cross_attn = CrossAttention(query_dim=out_ch, context_dim=cond_ch, num_heads=8, hidden_dim=hidden_dim, rngs=rngs)
-        print(f"Initialized ResBlock1d with in_ch={in_ch}, out_ch={out_ch}, time_ch={time_ch}, cond_ch={cond_ch}, hidden_dim={hidden_dim}")
 
     def __call__(self, x_btc: jnp.ndarray, time_feat_b1c: jnp.ndarray, context_bnc: jnp.ndarray) -> jnp.ndarray:
         """Apply residual block with cross-attention conditioning.
@@ -112,8 +111,7 @@ class FiLMBlock(nnx.Module):
     def __init__(self, in_ch: int, cond_dim: int, hidden_dim: int, rngs: nnx.Rngs):
         self.fc1 = nnx.Linear(cond_dim, hidden_dim, rngs=rngs)
         self.fc2 = nnx.Linear(hidden_dim, 2 * in_ch, rngs=rngs)
-        print(f"Initialized FiLMBlock with in_ch={in_ch}, cond_dim={cond_dim}, hidden_dim={hidden_dim}")
-        self.in_ch = in_ch
+
     def __call__(self, x_btc: jnp.ndarray, cond_bc: jnp.ndarray, cond_mask: jnp.ndarray) -> jnp.ndarray:
         """Apply FiLM conditioning.
         
@@ -128,24 +126,11 @@ class FiLMBlock(nnx.Module):
         # Pool condition tokens to get a single vector per batch item
         gamma_beta = self.fc1(cond_bc)  # [B, hidden_dim]
         gamma_beta = nnx.silu(gamma_beta)
-        # Debug prints to diagnose channel mismatches during inference
-        try:
-            fc2_out = getattr(self.fc2, "out_features", None)
-        except Exception:
-            fc2_out = None
+        
         gamma_beta = self.fc2(gamma_beta)  # [B, 2*in_ch]
         # After fc2: split to gamma/beta
         gamma, beta = jnp.split(gamma_beta, 2, axis=-1)  # each [B, C]
-        # Diagnostic print
-        print(
-            "FiLM call: id=", id(self),
-            "x.shape=", getattr(x_btc, "shape", None),
-            "cond.shape=", getattr(cond_bc, "shape", None),
-            "fc2_out_attr=", fc2_out,
-            "gamma.shape=", getattr(gamma, "shape", None),
-            "beta.shape=", getattr(beta, "shape", None),
-            "cond_mask.shape=", getattr(cond_mask, "shape", None),
-        )
+       
         return x_btc * (1 + gamma[:, None, :] * cond_mask[:, None, None]) + beta[:, None, :] * cond_mask[:, None, None]
 
 
@@ -179,29 +164,31 @@ class UNet1DConditioned(nnx.Module):
         down_blocks = []
         downsamples = []
         skip_channels = []
-        film_blocks = []
+        down_film_blocks = []
 
         for i, m in enumerate(ch_mult):
             out_ch = base_ch * m
             for _ in range(num_res_blocks):
                 down_blocks.append(ResBlock1d(ch, out_ch, base_ch, base_ch, hidden_dim=hidden_dim, rngs=rngs, groups=groups))
-                film_blocks.append(FiLMBlock(out_ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
+                down_film_blocks.append(FiLMBlock(out_ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
                 ch = out_ch
             skip_channels.append(ch)
-            downsamples.append(Downsample1d(ch, rngs=rngs) if i != len(ch_mult) - 1 else Identity1d())
-
+            downsamples.append(Downsample1d(ch, rngs=rngs) if i != len(ch_mult) - 1 else Identity1d())\
+            
+        mid_film_blocks = []
         self.mid_block1 = ResBlock1d(ch, ch, base_ch, base_ch, hidden_dim=hidden_dim, rngs=rngs, groups=groups)
-        film_blocks.append(FiLMBlock(ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
+        mid_film_blocks.append(FiLMBlock(ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
         self.mid_block2 = ResBlock1d(ch, ch, base_ch, base_ch, hidden_dim=hidden_dim, rngs=rngs, groups=groups)
-        film_blocks.append(FiLMBlock(ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
+        mid_film_blocks.append(FiLMBlock(ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
 
         up_blocks = []
         upsamples = []
+        up_film_blocks = []
         for i, m in reversed(list(enumerate(ch_mult))):
             out_ch = base_ch * m
             for _ in range(num_res_blocks):
                 up_blocks.append(ResBlock1d(ch + skip_channels[i], out_ch, base_ch, base_ch, hidden_dim=hidden_dim, rngs=rngs, groups=groups))
-                film_blocks.append(FiLMBlock(out_ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
+                up_film_blocks.append(FiLMBlock(out_ch, cond2_dim, hidden_dim=hidden_dim, rngs=rngs))
                 ch = out_ch
             upsamples.append(Upsample1d(ch, rngs=rngs) if i != 0 else Identity1d())
 
@@ -211,10 +198,9 @@ class UNet1DConditioned(nnx.Module):
         self.skip_channels = tuple(skip_channels)
         self.up_blocks = nnx.List(up_blocks)
         self.upsamples = nnx.List(upsamples)
-        self.film_blocks = nnx.List(film_blocks)
-        for i, block in enumerate(self.film_blocks):
-            print(f"FiLM block {i}: in_ch={block.in_ch}, cond_dim={block.fc1.in_features}, hidden_dim={block.fc1.out_features // 4}")
-
+        self.down_film_blocks = nnx.List(down_film_blocks)
+        self.mid_film_blocks = nnx.List(mid_film_blocks)
+        self.up_film_blocks = nnx.List(up_film_blocks)
         self.out_norm = nnx.GroupNorm(num_features=ch, num_groups=min(groups, ch), epsilon=1e-5, rngs=rngs)
         self.out_conv = nnx.Conv(in_features=ch, out_features=in_ch, kernel_size=(3,), padding="SAME", rngs=rngs)
 
@@ -247,22 +233,17 @@ class UNet1DConditioned(nnx.Module):
         rb = 0
         for i in range(self.n_down):
             for _ in range(self.num_res_blocks):
-                print(rb)
-                print(self.film_blocks[rb].in_ch)
                 h = self.down_blocks[rb](h, time_feat, c1)
-                print(rb)
-                h = self.film_blocks[rb](h, c2, c2_mask)
+                h = self.down_film_blocks[rb](h, c2, c2_mask)
                 rb += 1
             skips.append(h)
             h = self.downsamples[i](h)
 
         h = self.mid_block1(h, time_feat, c1)
-        h = self.film_blocks[rb](h, c2, c2_mask)
-        rb += 1
+        h = self.mid_film_blocks[0](h, c2, c2_mask)
         h = self.mid_block2(h, time_feat, c1)
-        h = self.film_blocks[rb](h, c2, c2_mask)
-        rb += 1
-
+        h = self.mid_film_blocks[1](h, c2, c2_mask)
+        
         rb_up = 0
         for i in range(self.n_down):
             skip = skips.pop()
@@ -274,7 +255,7 @@ class UNet1DConditioned(nnx.Module):
             for _ in range(self.num_res_blocks):
                 h = jnp.concatenate([h, skip], axis=-1)
                 h = self.up_blocks[rb_up](h, time_feat, c1)
-                h = self.film_blocks[rb + rb_up](h, c2, c2_mask)
+                h = self.up_film_blocks[rb_up](h, c2, c2_mask)
                 rb_up += 1
 
             h = self.upsamples[i](h)

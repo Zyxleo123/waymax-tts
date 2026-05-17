@@ -141,7 +141,7 @@ def predict_planner_trajectories_with_periodic_replan(
 
     pred = PredictionBatch(
         start_t_b=jnp.zeros((num_worlds,), dtype=jnp.int32),
-        trajectory_world_bt5=jnp.asarray(traj_bt5[:, None, :, :], dtype=jnp.float32),
+        trajectory_world_bt5=jnp.asarray(traj_bt5, dtype=jnp.float32),
         world_t_seconds_bt=jnp.asarray(world_t, dtype=jnp.float32),
         world_t_valid_bt=jnp.asarray(world_valid),
         aux=initial_result.aux,

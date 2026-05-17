@@ -101,6 +101,12 @@ def coerce_tree_like(template, raw):
         return type(template)(**{k: coerce_tree_like(getattr(template, k), raw[k]) for k in template._fields})
     if isinstance(template, tuple):
         return type(template)(coerce_tree_like(t, r) for t, r in zip(template, raw, strict=True))
+    if isinstance(template, list):
+        if isinstance(raw, dict):
+            ordered_raw = [raw[str(i)] for i in range(len(template))]
+        else:
+            ordered_raw = raw
+        return type(template)(coerce_tree_like(t, r) for t, r in zip(template, ordered_raw, strict=True))
     if isinstance(template, dict):
         return {k: coerce_tree_like(template[k], raw[k]) for k in template}
     return raw

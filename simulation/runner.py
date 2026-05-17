@@ -99,8 +99,6 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         goal_eval = check_goal_reaching(
             replaced_state,
             goal_xy_b2,
-            goal_t_b,
-            threshold_m=float(args.goal_threshold_m),
         )
         goal_reached = np.asarray(goal_eval["reached"])
         goal_reached_step = np.asarray(goal_eval["reached_step"])
@@ -112,15 +110,15 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         for world_idx in range(len(scenario_indices)):
             episode_length = goal_reached_step[world_idx] + 1 if goal_reached[world_idx] else overlap_timeseries.shape[-1]
             if "overlap" in rollout["metric_timeseries"]:
-                overlap[world_idx] = overlap_timeseries[world_idx, :, :episode_length].sum() > 0
+                overlap[world_idx] = overlap_timeseries[world_idx, :episode_length].sum() > 0
             if "offroad" in rollout["metric_timeseries"]:
-                offroad[world_idx] = offroad_timeseries[world_idx, :, :episode_length].sum() > 0
+                offroad[world_idx] = offroad_timeseries[world_idx, :episode_length].sum() > 0
         tl_violation = tl_violation & (tl_violation_step < goal_reached_step)
 
         success = goal_reached & (~overlap) & (~offroad) & (~tl_violation)
         reached_all += int(np.sum(goal_eval["reached"]))
         success_all += int(np.sum(success))
-        pred_traj = np.asarray(pred.trajectories_world_bkt5)
+        pred_traj = np.asarray(pred.trajectory_world_bt5)
         start_t = np.asarray(pred.start_t_b, dtype=np.int32)
 
         if args.visualize_mode == "all":
@@ -148,7 +146,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             for i in visualize_indices
         ]
         ego_start_times = [int(start_t[i]) for i in visualize_indices]
-        ego_trajectories = [np.asarray(pred_traj[i, 0]) for i in visualize_indices]
+        ego_trajectories = [np.asarray(pred_traj[i]) for i in visualize_indices]
         goal_xys = [np.asarray(goal_xy_b2[i]) for i in visualize_indices]
         if video_requests:
             video_paths = render_videos_batched(
@@ -165,7 +163,6 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
                 "ego_idx": int(ego_idx_b[i]),
                 "goal_xy": [float(goal_xy_b2[i, 0]), float(goal_xy_b2[i, 1])],
                 "goal_timestep": int(goal_t_b[i]),
-                "goal_threshold_m": float(args.goal_threshold_m),
                 "goal_reached": bool(goal_eval["reached"][i]),
                 "reached_timestep": int(goal_eval["reached_step"][i]),
                 "min_goal_distance_m": float(goal_eval["min_goal_distance_m"][i]),
@@ -191,7 +188,6 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         "num_success": int(success_all),
         "goal_reach_rate": float(reached_all / tested_scenarios) if tested_scenarios > 0 else 0.0,
         "success_rate": float(success_all / tested_scenarios) if tested_scenarios > 0 else 0.0,
-        "goal_threshold_m": float(args.goal_threshold_m),
     }
     _save_json(output_dir / "summary.json", summary)
 

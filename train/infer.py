@@ -14,6 +14,7 @@ from flax import nnx
 
 from model.diffusion.diffusion_policy import DiffusionPolicy
 from train.checkpoints import restore_checkpoint
+from train.utils import coerce_tree_like
 from data.types import PreprocessConfig
 
 
@@ -128,8 +129,9 @@ def load_model_for_inference(
         if "params_state" not in restored or "ema_params" not in restored:
             raise KeyError("Checkpoint is missing 'params_state' or 'ema_params'.")
 
-        params_state = restored["ema_params"] if use_ema else restored["params_state"]
-        nonparam_state = restored.get("nonparam_state", template_nonparam_state)
+        raw_params_state = restored["ema_params"] if use_ema else restored["params_state"]
+        params_state = coerce_tree_like(template_params_state, raw_params_state)
+        nonparam_state = coerce_tree_like(template_nonparam_state, restored.get("nonparam_state", template_nonparam_state))
 
     model_cfg = {
         "target_dim": int(metadata["target_dim"]),
