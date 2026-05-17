@@ -14,7 +14,7 @@ import wandb
 from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
-from model.diffusion_policy import DiffusionPolicy
+from model.diffusion.diffusion_policy import DiffusionPolicy
 from train.types import PreprocessConfig
 
 
@@ -265,6 +265,7 @@ def init_wandb_run(args, config_dict):
     run = wandb.init(
         project=args.wandb_project,
         name=wandb_name,
+        dir=run_dir,
         entity=args.wandb_entity,
         config=config_dict,
     )

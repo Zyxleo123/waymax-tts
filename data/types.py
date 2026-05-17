@@ -14,7 +14,6 @@ class PreprocessConfig:
     ego_range: float = 100.0
     max_velocity: float = 25.0
     max_width: float = 10.0
-    max_map_points: int = 1024
     max_tl_points: int = 16
     num_map_type_classes: int = 21
     predict_horizon: int = 25
@@ -23,6 +22,7 @@ class PreprocessConfig:
     max_segments: int = 128
     max_points_per_segment: int = 128
     num_object_types: int = 8
+    inst_dim: int = 256
 
 
 @struct.dataclass

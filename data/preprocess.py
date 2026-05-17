@@ -176,45 +176,98 @@ def _build_map_features(
     dir_y_bm = state.roadgraph_points.dir_y
     types_bm = state.roadgraph_points.types.astype(jnp.int32)
     valid_bm = state.roadgraph_points.valid
+    ids_bm = state.roadgraph_points.ids.astype(jnp.int32)
 
-    def _single(x_m, y_m, dx_m, dy_m, ty_m, va_m, origin_2, heading):
-        xy = jnp.stack([x_m, y_m], axis=-1)
-        dirs = jnp.stack([dx_m, dy_m], axis=-1)
+    max_segments = int(cfg.max_segments)
+    max_points_per_segment = int(cfg.max_points_per_segment)
+    feat_dim = 2 + 2 + cfg.num_map_type_classes
+    sentinel_id = jnp.iinfo(jnp.int32).max
 
-        centered = xy - origin_2[None, :]
+    def _build_for_batch(batch_idx: int) -> tuple[jax.Array, jax.Array]:
+        xy = jnp.stack([x_bm[batch_idx], y_bm[batch_idx]], axis=-1)
+        dirs = jnp.stack([dir_x_bm[batch_idx], dir_y_bm[batch_idx]], axis=-1)
+        types = types_bm[batch_idx]
+        ids = ids_bm[batch_idx]
+        valid = valid_bm[batch_idx]
+
+        centered = xy - origin_xy_b2[batch_idx][None, :]
         dist = jnp.linalg.norm(centered, axis=-1)
-        keep = va_m & (dist < cfg.max_range)
+        valid_and_range = valid & (dist < cfg.max_range)
 
-        score = jnp.where(keep, -dist, -1e9)
-        k = min(cfg.max_map_points, score.shape[0])
-        top_vals, top_idx = jax.lax.top_k(score, k)
-        valid_k = top_vals > -1e8
+        empty_feat = jnp.zeros((max_segments, max_points_per_segment, feat_dim), dtype=jnp.float32)
+        empty_valid = jnp.zeros((max_segments, max_points_per_segment), dtype=jnp.bool_)
 
-        xy_k = xy[top_idx]
-        dirs_k = dirs[top_idx]
-        ty_k = ty_m[top_idx]
+        def _build(_: None) -> tuple[jax.Array, jax.Array]:
+            sort_ids = jnp.where(valid_and_range, ids, sentinel_id)
+            sort_dist = jnp.where(valid_and_range, dist, jnp.inf)
+            order = jnp.lexsort((sort_dist, sort_ids))
 
-        xy_rel = _rotate_xy(xy_k - origin_2[None, :], heading) / cfg.max_range
-        dir_rel = _rotate_xy(dirs_k, heading)
-        dir_norm = jnp.linalg.norm(dir_rel, axis=-1, keepdims=True)
-        dir_rel = dir_rel / jnp.maximum(dir_norm, 1e-6)
+            sort_ids = sort_ids[order]
+            sort_xy = xy[order]
+            sort_dirs = dirs[order]
+            sort_types = types[order]
 
-        ty_safe = jnp.where(
-            (ty_k >= 0) & (ty_k < cfg.num_map_type_classes),
-            ty_k,
-            jnp.full_like(ty_k, cfg.map_unknown_type_index),
-        )
-        type_oh = jax.nn.one_hot(ty_safe, cfg.num_map_type_classes, dtype=jnp.float32)
+            unique_ids, counts = jnp.unique(
+                sort_ids,
+                size=max_segments + 1,
+                fill_value=sentinel_id,
+                return_counts=True,
+            )
+            unique_ids = unique_ids[:max_segments]
+            counts = counts[:max_segments]
+            starts = jnp.concatenate(
+                [jnp.array([0], dtype=jnp.int32), jnp.cumsum(counts[:-1], dtype=jnp.int32)],
+                axis=0,
+            )
 
-        feat_k = jnp.concatenate([xy_rel.astype(jnp.float32), dir_rel.astype(jnp.float32), type_oh], axis=-1)
-        feat_k = jnp.where(valid_k[:, None], feat_k, 0.0)
+            pad = max_points_per_segment
+            sort_xy = jnp.pad(sort_xy, ((0, pad), (0, 0)))
+            sort_dirs = jnp.pad(sort_dirs, ((0, pad), (0, 0)))
+            sort_types = jnp.pad(sort_types, ((0, pad),))
 
-        pad = cfg.max_map_points - k
-        feat = jnp.pad(feat_k, ((0, pad), (0, 0)))
-        valid = jnp.pad(valid_k, ((0, pad),), constant_values=False)
-        return feat, valid
+            point_rank = jnp.arange(max_points_per_segment, dtype=jnp.int32)
 
-    return jax.vmap(_single)(x_bm, y_bm, dir_x_bm, dir_y_bm, types_bm, valid_bm, origin_xy_b2, heading_b)
+            def _build_segment(seg_idx: jax.Array) -> tuple[jax.Array, jax.Array]:
+                seg_id = unique_ids[seg_idx]
+                count = counts[seg_idx]
+                start = starts[seg_idx]
+
+                def _compute(_: None) -> tuple[jax.Array, jax.Array]:
+                    seg_xy = jax.lax.dynamic_slice(sort_xy, (start, 0), (max_points_per_segment, 2))
+                    seg_dirs = jax.lax.dynamic_slice(sort_dirs, (start, 0), (max_points_per_segment, 2))
+                    seg_types = jax.lax.dynamic_slice(sort_types, (start,), (max_points_per_segment,))
+
+                    xy_rel = _rotate_xy(seg_xy - origin_xy_b2[batch_idx][None, :], heading_b[batch_idx]) / cfg.max_range
+                    dir_rel = _rotate_xy(seg_dirs, heading_b[batch_idx])
+                    dir_norm = jnp.linalg.norm(dir_rel, axis=-1, keepdims=True)
+                    dir_rel = dir_rel / jnp.maximum(dir_norm, 1e-6)
+
+                    ty_safe = jnp.where(
+                        (seg_types >= 0) & (seg_types < cfg.num_map_type_classes),
+                        seg_types,
+                        jnp.full_like(seg_types, cfg.map_unknown_type_index),
+                    )
+                    type_oh = jax.nn.one_hot(ty_safe, cfg.num_map_type_classes, dtype=jnp.float32)
+                    seg_feat = jnp.concatenate([xy_rel.astype(jnp.float32), dir_rel.astype(jnp.float32), type_oh], axis=-1)
+
+                    seg_valid = point_rank < count
+                    seg_feat = jnp.where(seg_valid[:, None], seg_feat, 0.0)
+                    return seg_feat, seg_valid
+
+                return jax.lax.cond(
+                    (seg_id != sentinel_id) & (count > 0),
+                    _compute,
+                    lambda _: (jnp.zeros((max_points_per_segment, feat_dim), dtype=jnp.float32), jnp.zeros((max_points_per_segment,), dtype=jnp.bool_)),
+                    operand=None,
+                )
+
+            segment_feats, segment_valids = jax.vmap(_build_segment)(jnp.arange(max_segments, dtype=jnp.int32))
+            return segment_feats, segment_valids
+
+        return jax.lax.cond(jnp.any(valid_and_range), _build, lambda _: (empty_feat, empty_valid), operand=None)
+
+    feats, valids = jax.vmap(_build_for_batch)(jnp.arange(x_bm.shape[0], dtype=jnp.int32))
+    return feats, valids
 
 
 def _build_tl_features(
@@ -279,6 +332,8 @@ def _preprocess_single_batch(
     rng: jax.Array,
     cfg: PreprocessConfig,
     anchor_step_override: int | None = None,
+    goal_step_override: int | None = None,
+    goal_xy_override: jax.Array | None = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     bsz = state.log_trajectory.x.shape[0]
     ego_idx = extract_ego_index(state)
@@ -301,11 +356,18 @@ def _preprocess_single_batch(
     ego_valid_bt = _gather_ego(state.log_trajectory.valid, ego_idx)
     ts_bt = _gather_ego(state.log_trajectory.timestamp_micros, ego_idx).astype(jnp.float32) * 1e-6
 
-    rng, rng_goal = jax.random.split(rng)
-    goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)
-    goal_x_b = jnp.take_along_axis(x_bt, goal_step_b[:, None], axis=1)[:, 0]
-    goal_y_b = jnp.take_along_axis(y_bt, goal_step_b[:, None], axis=1)[:, 0]
-    goal_xy_world = jnp.stack([goal_x_b, goal_y_b], axis=-1)
+
+    if goal_step_override is not None:
+        goal_step_b = jnp.full((bsz,), goal_step_override, dtype=jnp.int32)
+    else:
+        rng, rng_goal = jax.random.split(rng)
+        goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)
+    if goal_xy_override is not None:
+        goal_xy_world = goal_xy_override
+    else:
+        goal_x_b = jnp.take_along_axis(x_bt, goal_step_b[:, None], axis=1)[:, 0]
+        goal_y_b = jnp.take_along_axis(y_bt, goal_step_b[:, None], axis=1)[:, 0]
+        goal_xy_world = jnp.stack([goal_x_b, goal_y_b], axis=-1)
 
     ego_world_btd_full = jnp.stack([x_bt, y_bt, vx_bt, vy_bt, yaw_bt], axis=-1)
 
@@ -332,6 +394,14 @@ def _preprocess_single_batch(
         other_valid_bn=other_valid_bn,
         cfg=cfg,
     )
+
+    object_types_bn = state.object_metadata.object_types.astype(jnp.int32)
+    type_oh = jax.nn.one_hot(
+        jnp.clip(object_types_bn, 0, cfg.num_object_types - 1),
+        cfg.num_object_types,
+        dtype=jnp.float32,
+    )
+    other_norm = jnp.concatenate([other_norm, type_oh], axis=-1)
 
     origin_xy = ego_resampled_world[:, 0, :2]
     anchor_yaw = ego_resampled_world[:, 0, 4]
@@ -383,6 +453,8 @@ def preprocess_simulator_state(
     rng: jax.Array,
     cfg: PreprocessConfig,
     anchor_step_override: int | None = None,
+    goal_step_override: int | None = None,
+    goal_xy_override: jax.Array | None = None,
 ) -> tuple[PreprocessBatch, jax.Array]:
     if state.log_trajectory.x.ndim < 3:
         raise ValueError("Expected batched SimulatorState with shape [..., N, T].")
@@ -390,6 +462,8 @@ def preprocess_simulator_state(
     if state.log_trajectory.x.ndim > 3:
         n_devices = state.log_trajectory.x.shape[0]
         keys = jax.random.split(rng, n_devices)
-        return jax.vmap(lambda s, k: preprocess_simulator_state(s, k, cfg, anchor_step_override))(state, keys)
+        return jax.vmap(
+            lambda s, k, t, t_g, g: preprocess_simulator_state(s, k, cfg, t, t_g, g)
+        )(state, keys, anchor_step_override, goal_step_override, goal_xy_override)
 
-    return _preprocess_single_batch(state, rng, cfg, anchor_step_override)
+    return _preprocess_single_batch(state, rng, cfg, anchor_step_override, goal_step_override, goal_xy_override)

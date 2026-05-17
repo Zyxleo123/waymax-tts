@@ -28,6 +28,7 @@ benchmarks/
 */checkpoints/
 
 # slurm
+logs/
 *.err
 *.out
 
@@ -42,5 +43,9 @@ videos/
 *.mp4
 *.npz
 *.json
+
+# dotenv
+.env
+
 
 waymo-open-dataset/
