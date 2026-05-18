@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ class TrainQAConfig:
 	wandb_mode: str = "online"
 	model_type: str = "qwen"
 	qwen_name: str = "Qwen/Qwen3-0.6B"
-	gemma_name: str = "Gemma4-2B"
+	gemma_name: str = "google/gemma-4-E2B-it"
 	batch_size: int = 1
 	learning_rate: float = 1e-5
 	warmup_steps: int = 1000
@@ -166,7 +167,72 @@ def _extract_answer_text(text: str) -> str:
 	return text.strip()
 
 
-def _generate_predictions(
+def _generate_predictions_gemma(
+	model: Any,
+	features: Mapping[str, torch.Tensor],
+	prompt_ids: torch.Tensor,
+	*,
+	device: torch.device,
+	max_new_tokens: int,
+) -> list[str]:
+	"""Generate predictions using the same <SCENE>-placeholder + embedding-hook path as training."""
+	scene_tokens = model._tokenize_scene_features(features)
+
+	batch_size = prompt_ids.shape[0]
+	num_scene_tokens = scene_tokens.shape[1]
+
+	dummy_id = getattr(model, "scene_token_id", None)
+	if dummy_id is None:
+		raise ValueError("Gemma model is missing scene_token_id. Add <SCENE> token in SceneGemmaVLA.__init__.")
+
+	scene_dummy_ids = torch.full(
+		(batch_size, num_scene_tokens),
+		fill_value=dummy_id,
+		dtype=prompt_ids.dtype,
+		device=device,
+	)
+
+	input_ids_for_gemma = torch.cat(
+		[prompt_ids, scene_dummy_ids],
+		dim=1,
+	)
+
+	if model.tokenizer.pad_token_id is not None:
+		attention_mask = (input_ids_for_gemma != model.tokenizer.pad_token_id).long()
+		scene_start = prompt_ids.shape[1]
+		scene_end = scene_start + num_scene_tokens
+		attention_mask[:, scene_start:scene_end] = 1
+	else:
+		attention_mask = torch.ones_like(input_ids_for_gemma, dtype=torch.long)
+
+	scene_start = prompt_ids.shape[1]
+	model._scene_tokens_for_hook = scene_tokens
+	model._scene_start_for_hook = scene_start
+	model._scene_len_for_hook = num_scene_tokens
+
+	try:
+		generated_ids = model.llm.generate(
+			input_ids=input_ids_for_gemma,
+			attention_mask=attention_mask,
+			max_new_tokens=max_new_tokens,
+			do_sample=False,
+			pad_token_id=model.tokenizer.pad_token_id,
+			eos_token_id=model.tokenizer.eos_token_id,
+			use_cache=False,
+		)
+	finally:
+		model._scene_tokens_for_hook = None
+		model._scene_start_for_hook = None
+		model._scene_len_for_hook = None
+
+	input_len = input_ids_for_gemma.shape[1]
+	new_token_ids = generated_ids[:, input_len:]
+
+	decoded = model.tokenizer.batch_decode(new_token_ids, skip_special_tokens=True)
+	return [_extract_answer_text(text) for text in decoded]
+
+
+def _generate_predictions_qwen(
 	model: Any,
 	features: Mapping[str, torch.Tensor],
 	prompt_ids: torch.Tensor,
@@ -200,6 +266,74 @@ def _generate_predictions(
 	return [_extract_answer_text(text) for text in decoded]
 
 
+def _generate_predictions(
+	model: Any,
+	features: Mapping[str, torch.Tensor],
+	prompt_ids: torch.Tensor,
+	*,
+	model_type: str,
+	device: torch.device,
+	max_new_tokens: int,
+) -> list[str]:
+	if model_type == "qwen":
+		return _generate_predictions_qwen(
+			model,
+			features,
+			prompt_ids,
+			device=device,
+			max_new_tokens=max_new_tokens,
+		)
+	if model_type == "gemma":
+		return _generate_predictions_gemma(
+			model,
+			features,
+			prompt_ids,
+			device=device,
+			max_new_tokens=max_new_tokens,
+		)
+	raise ValueError(f"Unknown model_type: {model_type}")
+
+
+def build_qa_model(cfg: TrainQAConfig | Mapping[str, Any]) -> Any:
+	if isinstance(cfg, TrainQAConfig):
+		config = dataclasses.asdict(cfg)
+	else:
+		config = dict(cfg)
+	model_type = config.get("model_type", "qwen")
+	if model_type == "qwen":
+		model = SceneQwenVLA(qwen_name=config["qwen_name"])
+	elif model_type == "gemma":
+		model = SceneGemmaVLA(gemma_name=config["gemma_name"])
+	else:
+		raise ValueError(f"Unknown model_type: {model_type}")
+	_ensure_tokenizer(model)
+	return model
+
+
+def save_training_config(cfg: TrainQAConfig, output_dir: str | Path) -> Path:
+	config_path = Path(output_dir) / "training_config.json"
+	config_path.parent.mkdir(parents=True, exist_ok=True)
+	with config_path.open("w", encoding="utf-8") as f:
+		json.dump(dataclasses.asdict(cfg), f, indent=2)
+	return config_path
+
+
+def load_training_config(output_dir: str | Path, checkpoint: Mapping[str, Any] | None = None) -> dict[str, Any]:
+	config_path = Path(output_dir) / "training_config.json"
+	if config_path.exists():
+		with config_path.open(encoding="utf-8") as f:
+			return json.load(f)
+	if checkpoint is not None:
+		keys = ("model_type", "qwen_name", "gemma_name", "max_prompt_length", "max_answer_length")
+		fallback = {key: checkpoint[key] for key in keys if key in checkpoint}
+		if fallback:
+			return fallback
+	raise FileNotFoundError(
+		f"No training_config.json in {output_dir} and checkpoint has no model metadata. "
+		"Pass model_type and model name explicitly."
+	)
+
+
 def _evaluate_answer_accuracy(
 	model: Any,
 	loader,
@@ -209,6 +343,7 @@ def _evaluate_answer_accuracy(
 	max_samples: int,
 	max_prompt_length: int,
 	max_answer_length: int,
+	model_type: str,
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
 	"""Evaluate model accuracy by comparing generated answers with dataset answers.
 	
@@ -259,6 +394,7 @@ def _evaluate_answer_accuracy(
 					model,
 					features,
 					prompt_ids,
+					model_type=model_type,
 					device=device,
 					max_new_tokens=max_answer_length,
 				)
@@ -301,19 +437,31 @@ def _evaluate_answer_accuracy(
 	return overall_metrics, per_question_metrics
 
 
-def save_checkpoint(output_dir: str, step: int, model: Any, optimizer: torch.optim.Optimizer, scheduler: Any) -> None:
+def save_checkpoint(
+	output_dir: str,
+	step: int,
+	model: Any,
+	optimizer: torch.optim.Optimizer,
+	scheduler: Any,
+	*,
+	cfg: TrainQAConfig | None = None,
+) -> None:
 	ckpt_dir = Path(output_dir) / "checkpoints"
 	ckpt_dir.mkdir(parents=True, exist_ok=True)
 	ckpt_path = ckpt_dir / f"step_{step:08d}.pt"
-	torch.save(
-		{
-			"step": step,
-			"model_state_dict": model.state_dict(),
-			"optimizer_state_dict": optimizer.state_dict(),
-			"scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
-		},
-		ckpt_path,
-	)
+	payload: dict[str, Any] = {
+		"step": step,
+		"model_state_dict": model.state_dict(),
+		"optimizer_state_dict": optimizer.state_dict(),
+		"scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+	}
+	if cfg is not None:
+		payload["model_type"] = cfg.model_type
+		payload["qwen_name"] = cfg.qwen_name
+		payload["gemma_name"] = cfg.gemma_name
+		payload["max_prompt_length"] = cfg.max_prompt_length
+		payload["max_answer_length"] = cfg.max_answer_length
+	torch.save(payload, ckpt_path)
 
 
 def run_training(cfg: TrainQAConfig) -> None:
@@ -323,6 +471,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 
 	output_dir = Path(cfg.output_dir)
 	output_dir.mkdir(parents=True, exist_ok=True)
+	save_training_config(cfg, output_dir)
 
 	# Split cache paths into train and validation sets
 	all_cache_paths = _resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
@@ -350,14 +499,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 		cache_paths=val_cache_paths,
 	) if val_cache_paths else None
 
-	if cfg.model_type == "qwen":
-		model = SceneQwenVLA(qwen_name=cfg.qwen_name)
-	elif cfg.model_type == "gemma":
-		model = SceneGemmaVLA(gemma_name=cfg.gemma_name)
-	else:
-		raise ValueError(f"Unknown model_type: {cfg.model_type}")
-
-	_ensure_tokenizer(model)
+	model = build_qa_model(cfg)
 	if cfg.use_gradient_checkpointing and hasattr(model.llm, "gradient_checkpointing_enable"):
 		model.llm.gradient_checkpointing_enable()
 	if cfg.freeze_llm:
@@ -476,7 +618,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 					)
 
 			if cfg.save_every > 0 and global_step > 0 and global_step % cfg.save_every == 0:
-				save_checkpoint(cfg.output_dir, global_step, model, optimizer, scheduler)
+				save_checkpoint(cfg.output_dir, global_step, model, optimizer, scheduler, cfg=cfg)
 
 			global_step += 1
 			pbar.update(1)
@@ -498,6 +640,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 				max_samples=cfg.eval_num_samples,
 				max_prompt_length=cfg.max_prompt_length,
 				max_answer_length=cfg.max_answer_length,
+				model_type=cfg.model_type,
 			)
 
 			# Evaluate on training set
@@ -509,6 +652,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 				max_samples=cfg.eval_num_samples,
 				max_prompt_length=cfg.max_prompt_length,
 				max_answer_length=cfg.max_answer_length,
+				model_type=cfg.model_type,
 			)
 
 			tqdm.write(
@@ -535,7 +679,7 @@ def run_training(cfg: TrainQAConfig) -> None:
 	if callable(save_pretrained):
 		model.llm.save_pretrained(str(output_dir / "llm"))
 	model.tokenizer.save_pretrained(str(output_dir / "tokenizer"))
-	save_checkpoint(cfg.output_dir, global_step, model, optimizer, scheduler)
+	save_checkpoint(cfg.output_dir, global_step, model, optimizer, scheduler, cfg=cfg)
 	if wandb_run is not None:
 		wandb_run.finish()
 

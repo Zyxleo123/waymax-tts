@@ -141,6 +141,12 @@ class SceneGemmaVLA(nn.Module):
             trust_remote_code=True,
         )
 
+        special_tokens = {"additional_special_tokens": ["<SCENE>"]}
+        num_added = self.tokenizer.add_special_tokens(special_tokens)
+        if num_added > 0:
+            self.llm.resize_token_embeddings(len(self.tokenizer))
+        self.scene_token_id = self.tokenizer.convert_tokens_to_ids("<SCENE>")
+
         if hasattr(self.llm.config, "text_config"):
             hidden = self.llm.config.text_config.hidden_size
         else:
@@ -155,42 +161,6 @@ class SceneGemmaVLA(nn.Module):
         self.tl_tokenizer = MLP([tl_dim, hidden, hidden, hidden])
         self.map_tokenizer = PointNet(map_dim, hidden)
         self.attention = SelfAttention(hidden, n_layer=4, n_heads=4)
-
-        # to compress and go from 274 -> 32 learnt scene queries
-        '''
-            So after self-attention, you do cross-attention:
-                queries = learned 32 tokens
-                keys    = 274 scene tokens
-                values  = 274 scene tokens
-            This gives you 32 attended scene vectors. Then pass through a small MLP block:
-            MultiheadAttention(embed_dim=H, num_heads=4, batch_first=True)
-            Layernorm
-            MLP(H -> 4H -> H)
-            Layernorm
-            The output is (32, H).
-        '''
-        self.num_scene_queries = 32
-
-        self.scene_queries = nn.Parameter(
-            torch.randn(1, self.num_scene_queries, hidden) * 0.02
-        )
-
-        self.scene_compressor = nn.MultiheadAttention(
-            embed_dim=hidden,
-            num_heads=4,
-            dropout=0.0,
-            batch_first=True,
-        )
-
-        self.scene_compressor_ln = nn.LayerNorm(hidden)
-
-        self.scene_compressor_ffn = nn.Sequential(
-            nn.Linear(hidden, hidden * 4),
-            nn.GELU(),
-            nn.Linear(hidden * 4, hidden),
-        )
-
-        self.scene_compressor_ffn_ln = nn.LayerNorm(hidden)
 
         self._scene_tokens_for_hook = None
         self._scene_start_for_hook = None
@@ -239,33 +209,12 @@ class SceneGemmaVLA(nn.Module):
             ], dim=1
         )
 
-        x = self.attention(x, x_valid)
-
-        queries = self.scene_queries.expand(batch_size, -1, -1)
-
-        compressed_scene_tokens, _ = self.scene_compressor(
-            query=queries,
-            key=x,
-            value=x,
-            key_padding_mask=~x_valid.bool(),
-        )
-
-        compressed_scene_tokens = self.scene_compressor_ln(
-            queries + compressed_scene_tokens 
-        ) # layer norm
-
-        ffn_out = self.scene_compressor_ffn(compressed_scene_tokens) # MLP
-
-        compressed_scene_tokens = self.scene_compressor_ffn_ln(
-            compressed_scene_tokens + ffn_out
-        ) # [B, 274, 1536] -> [B, 32, 1536]
-
-        return compressed_scene_tokens
+        return self.attention(x, x_valid)
 
     def _replace_scene_embeddings_hook(self, module, inputs, output):
         """
         Gemma4 does not allow arbitrary inputs_embeds.
-        So we pass input_ids normally, then replace the dummy scene-token
+        So we pass input_ids with <SCENE> placeholders, then replace those
         embeddings with our learned scene embeddings inside the embedding layer.
         """
         if self._scene_tokens_for_hook is None:
@@ -309,57 +258,58 @@ class SceneGemmaVLA(nn.Module):
         batch_size = prompt_ids.shape[0]
         num_scene_tokens = scene_tokens.shape[1]
 
-        dummy_id = self.tokenizer.eos_token_id
-        if dummy_id is None:
-            dummy_id = self.tokenizer.pad_token_id
-
         scene_dummy_ids = torch.full(
             (batch_size, num_scene_tokens),
-            fill_value=dummy_id,
+            fill_value=self.scene_token_id,
             dtype=prompt_ids.dtype,
             device=device,
         )
 
-        if answer_ids is not None:
-            input_ids_for_gemma = torch.cat(
-                [prompt_ids, scene_dummy_ids, answer_ids],
-                dim=1,
-            )
+        input_ids_for_gemma = torch.cat(
+            [prompt_ids, scene_dummy_ids, answer_ids],
+            dim=1,
+        )
 
-            labels = torch.cat(
-                [
-                    torch.full(prompt_ids.shape, -100, device=device),
-                    torch.full(scene_dummy_ids.shape, -100, device=device),
-                    answer_ids,
-                ],
-                dim=1,
-            )
+        labels = torch.cat(
+            [
+                torch.full(prompt_ids.shape, -100, dtype=answer_ids.dtype, device=device),
+                torch.full(scene_dummy_ids.shape, -100, dtype=answer_ids.dtype, device=device),
+                answer_ids,
+            ],
+            dim=1,
+        )
 
-            if self.tokenizer.pad_token_id is not None:
-                labels = labels.masked_fill(
-                    input_ids_for_gemma == self.tokenizer.pad_token_id,
-                    -100,
-                )
+        if self.tokenizer.pad_token_id is not None:
+            labels = labels.masked_fill(
+                input_ids_for_gemma == self.tokenizer.pad_token_id,
+                -100,
+            )
+    
+
+        if self.tokenizer.pad_token_id is not None:
+            attention_mask = (input_ids_for_gemma != self.tokenizer.pad_token_id).long()
+            scene_start = prompt_ids.shape[1]
+            scene_end = scene_start + num_scene_tokens
+            attention_mask[:, scene_start:scene_end] = 1
         else:
-            input_ids_for_gemma = torch.cat(
-                [prompt_ids, scene_dummy_ids],
-                dim=1,
-            )
-            labels = None
-
-        attention_mask = torch.ones_like(input_ids_for_gemma, dtype=torch.long)
+            attention_mask = torch.ones_like(input_ids_for_gemma, dtype=torch.long)
 
         self._scene_tokens_for_hook = scene_tokens
         self._scene_start_for_hook = prompt_ids.shape[1]
         self._scene_len_for_hook = num_scene_tokens
 
-        outputs = self.llm(
-            input_ids=input_ids_for_gemma,
-            attention_mask=attention_mask,
-            labels=labels,
-            output_hidden_states=False,
-            use_cache=False,
-        )
+        try:
+            outputs = self.llm(
+                input_ids=input_ids_for_gemma,
+                attention_mask=attention_mask,
+                labels=labels,
+                output_hidden_states=False,
+                use_cache=False,
+            )
+        finally:
+            self._scene_tokens_for_hook = None
+            self._scene_start_for_hook = None
+            self._scene_len_for_hook = None
 
 
         loss = outputs.loss
