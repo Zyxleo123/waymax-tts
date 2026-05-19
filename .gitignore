@@ -44,3 +44,4 @@ videos/
 *.json
 
 waymo-open-dataset/
+.DS_Store
