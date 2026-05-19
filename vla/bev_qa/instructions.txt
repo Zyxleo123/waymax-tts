@@ -1,0 +1,45 @@
+First test the dataset:
+
+python -m vla.bev_qa.dataloader
+
+Then tiny training:
+
+python -m vla.bev_qa.train \
+  --file_indices 0 \
+  --max_samples 32 \
+  --max_steps 2 \
+  --batch_size 1 \
+  --wandb_mode disabled \
+  --output_dir /zfsauton/scratch/sbellad/waymax_rs/bev_qa_debug
+
+Then a slightly bigger test:
+
+python -m vla.bev_qa.train \
+  --file_indices 0,1 \
+  --max_samples 512 \
+  --max_steps 50 \
+  --batch_size 2 \
+  --wandb_mode disabled \
+  --output_dir /zfsauton/scratch/sbellad/waymax_rs/bev_qa_debug_512
+
+Then the initial real run:
+
+python -m vla.bev_qa.train \
+  --batch_size 2 \
+  --num_epochs 1 \
+  --wandb_mode online \
+  --output_dir /zfsauton/scratch/sbellad/waymax_rs/bev_qa_output_gemma
+
+By default this freezes:
+
+Gemma LLM: frozen
+Gemma vision tower: frozen
+Gemma embed_vision: frozen
+
+
+
+and trains only:
+
+BEV self-attention over image tokens
+BEV projection MLP
+LayerNorms
