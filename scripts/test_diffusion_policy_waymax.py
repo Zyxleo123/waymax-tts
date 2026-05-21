@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from train.infer import (  # noqa: E402
+from train.utils.infer import (  # noqa: E402
     load_model_for_inference,
     predict_replacement_trajectories_for_batch,
     predict_replacement_trajectories_with_periodic_replan,

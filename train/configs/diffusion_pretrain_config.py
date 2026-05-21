@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 
 
 @dataclass
-class PretrainConfig:
+class DiffusionPretrainConfig:
     seed: int = 0
     tfrecord_path: str = "/zfsauton/scratch/eshau/womd/tf_example/training/training_tfexample.tfrecord@1000"
     max_num_objects: int = 128
@@ -62,7 +62,7 @@ class PretrainConfig:
     jax_compilation_cache_dir: str = "./.jax_compilation_cache"
 
 
-def parse_args() -> PretrainConfig:
+def parse_args() -> DiffusionPretrainConfig:
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--seed", type=int, default=0)
@@ -118,8 +118,8 @@ def parse_args() -> PretrainConfig:
     parser.add_argument("--data_parallel", action="store_true")
     parser.add_argument("--jax_compilation_cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/.jax_compilation_cache")
 
-    return PretrainConfig(**vars(parser.parse_args()))
+    return DiffusionPretrainConfig(**vars(parser.parse_args()))
 
 
-def config_to_dict(config: PretrainConfig) -> dict:
+def config_to_dict(config: DiffusionPretrainConfig) -> dict:
     return asdict(config)

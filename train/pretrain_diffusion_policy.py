@@ -22,10 +22,10 @@ from tqdm import tqdm
 # Keep JAX/XLA logging to errors unless explicitly overridden by the caller.
 jax.config.update("jax_logging_level", "ERROR")
 
-from train.checkpoints import restore_checkpoint, save_checkpoint
+from train.utils.checkpoints import restore_checkpoint, save_checkpoint
 from data.preprocess import preprocess_simulator_state
 from data.types import PreprocessConfig
-from train.utils import (
+from train.utils.utils import (
     assert_matching_sim_state_signature,
     build_data_parallel_mesh_if_needed,
     canonicalize_state_for_mesh,
@@ -45,10 +45,10 @@ from train.utils import (
 )
 
 from model.diffusion.diffusion_policy import DiffusionPolicy
-from train.configs.pretrain_config import PretrainConfig, config_to_dict, parse_args
+from train.configs.diffusion_pretrain_config import DiffusionPretrainConfig, config_to_dict, parse_args
 
 
-def build_training_components(args: PretrainConfig):
+def build_training_components(args: DiffusionPretrainConfig):
     preprocess_cfg = PreprocessConfig(
         model_dt=args.model_dt,
         world_dt_fallback=0.1,
@@ -84,7 +84,7 @@ def build_training_components(args: PretrainConfig):
     return preprocess_cfg, model, tx, lr_schedule
 
 
-def _add_dummy_instruction_features(feats: dict[str, jax.Array], args: PretrainConfig) -> dict[str, jax.Array]:
+def _add_dummy_instruction_features(feats: dict[str, jax.Array], args: DiffusionPretrainConfig) -> dict[str, jax.Array]:
     batch_size = feats["ego_state"].shape[0]
     augmented = dict(feats)
     augmented["inst_features"] = jnp.zeros((batch_size, args.inst_dim), dtype=jnp.float32)
@@ -93,7 +93,7 @@ def _add_dummy_instruction_features(feats: dict[str, jax.Array], args: PretrainC
 
 
 def make_train_step(
-    pretrain_cfg: PretrainConfig,
+    pretrain_cfg: DiffusionPretrainConfig,
     preprocess_cfg: PreprocessConfig,
     grad_clip_norm: float,
     goal_mask_prob: float,

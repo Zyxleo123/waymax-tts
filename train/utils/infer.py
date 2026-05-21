@@ -13,8 +13,8 @@ import numpy as np
 from flax import nnx
 
 from model.diffusion.diffusion_policy import DiffusionPolicy
-from train.checkpoints import restore_checkpoint
-from train.utils import coerce_tree_like
+from train.utils.checkpoints import restore_checkpoint
+from train.utils.utils import coerce_tree_like
 from data.types import PreprocessConfig
 
 

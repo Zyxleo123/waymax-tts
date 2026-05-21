@@ -27,7 +27,7 @@ from model.diffusion_planner_v2 import (
     DiffusionPlanner,
     PlannerResult,
 )
-from train.infer import (  # noqa: E402
+from train.utils.infer import (  # noqa: E402
     PredictionBatch,
     _apply_ego_replacements_to_expanded_state,
     load_model_for_inference,

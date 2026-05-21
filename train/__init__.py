@@ -1,5 +1,3 @@
-"""JAX-native diffusion training utilities."""
-
 # from train.checkpoints import restore_checkpoint, save_checkpoint
 # from train.config import config_to_dict, parse_args
 # from train.infer import (

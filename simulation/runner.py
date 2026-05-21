@@ -121,6 +121,18 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         pred_traj = np.asarray(pred.trajectory_world_bt5)
         start_t = np.asarray(pred.start_t_b, dtype=np.int32)
 
+        if args.save_trajectory:
+            for i, scenario_idx in enumerate(scenario_indices):
+                traj_data = {
+                    "scenario_idx": int(scenario_idx),
+                    "ego_idx": int(ego_idx_b[i]),
+                    "predicted_trajectory": pred_traj[i],
+                    "start_timestep": int(start_t[i]),
+                    "goal_xy": np.asarray(goal_xy_b2[i]),
+                }
+                traj_path = output_dir / f"{os.path.basename(tfrecord_path)}.scenario_{scenario_idx:03d}.trajectory.npz"
+                np.savez(traj_path, **traj_data)
+
         if args.visualize_mode == "all":
             visualize_indices = np.arange(len(scenario_indices))
             video_requests = [

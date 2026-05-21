@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from train.infer import (
+from train.utils.infer import (
     load_model_for_inference,
 )
 from simulation.runner import run
@@ -28,7 +28,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tfrecord_dir",
         type=str,
-        default="/zfsauton/datasets/womd/tf_example",
+        default="/zfsauton/scratch/eshau/womd/tf_example/",
     )
     parser.add_argument(
         "--split", type=str, default="training", choices=["training", "validation"]
@@ -51,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num_scenarios", type=int, default=1000)
     parser.add_argument("--replan_interval_steps", type=int, default=5)
     parser.add_argument("--visualize_mode", type=str, default="all", choices=["all", "success", "failure", "none"])
+    parser.add_argument("--save_trajectory", action="store_true", default=False)
     return parser.parse_args()
 
 
