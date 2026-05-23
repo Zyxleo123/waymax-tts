@@ -43,7 +43,7 @@ class VLAPretrainConfig:
 	max_answer_length: int = 4
 	num_workers: int = 0
 	pin_memory: bool = True
-
+	add_eos: bool = False
 
 def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
 	if raw_file_indices is None:
@@ -69,7 +69,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--wandb_run_name", type=str, default='pretrain_vla')
 	parser.add_argument("--wandb_entity", type=str, default=None)
 	parser.add_argument("--wandb_mode", type=str, default="online", choices=("online", "offline", "disabled"))
-	parser.add_argument("--model_type", type=str, default="gemma", choices=["qwen", "gemma"])
+	parser.add_argument("--model_type", type=str, default="gemma", choices=["qwen", "gemma", "old_qwen"])
 	parser.add_argument("--qwen_name", type=str, default="Qwen/Qwen3-0.6B")
 	parser.add_argument("--gemma_name", type=str, default="google/gemma-4-E2B-it")
 	parser.add_argument("--batch_size", type=int, default=16)
@@ -97,7 +97,12 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--max_answer_length", type=int, default=8)
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
+	parser.add_argument("--add_eos", action="store_true", default=False)
 	args = parser.parse_args()
+	if args.add_eos:
+		print("Adding EOS token to answers during training and evaluation.")
+	else:
+		print("Not adding EOS token to answers. Make sure this matches the model's generation settings.")
 
 	return VLAPretrainConfig(
 		cache_dir=args.cache_dir or args.tfrecord_dir,
@@ -136,4 +141,5 @@ def parse_args() -> VLAPretrainConfig:
 		max_answer_length=args.max_answer_length,
 		num_workers=args.num_workers,
 		pin_memory=not args.no_pin_memory,
+		add_eos=args.add_eos,
 	)

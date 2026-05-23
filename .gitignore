@@ -47,5 +47,8 @@ videos/
 # dotenv
 .env
 
+# old
+old/
+
 
 waymo-open-dataset/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import gc
 
 # Reduce TensorFlow/XLA startup noise and keep TF from competing for GPU memory.
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -339,7 +340,11 @@ def main():
             global_step = replicate_to_mesh(global_step, data_mesh)
 
     ds_cfg = make_dataset_config(args, waymax_config, global_batch_size)
-    scenarios = iter_with_prefetch(dataloader.simulator_state_generator(ds_cfg), args.prefetch_size)
+
+    def make_scenarios_iter():
+        return iter_with_prefetch(dataloader.simulator_state_generator(ds_cfg), args.prefetch_size)
+
+    scenarios = make_scenarios_iter()
 
     # Data/mesh setup from a single canonical batch.
     first_sim_state = next(scenarios)
@@ -381,6 +386,10 @@ def main():
     _ = jax.block_until_ready(warmup_metrics["loss"])
 
     for epoch in range(start_epoch, args.epochs + 1):
+        if epoch > start_epoch and args.recreate_dataloader_each_epoch:
+            # Recreate the TF/Waymax iterator periodically to avoid long-run host-memory growth.
+            scenarios = make_scenarios_iter()
+
         ema_loss = None
         pbar = tqdm(total=args.steps_per_epoch, desc=f"Epoch {epoch:04d}")
 
@@ -424,6 +433,10 @@ def main():
             rng_key=rng_key,
             save_every=args.save_every,
         )
+
+        if args.epoch_gc_every > 0 and (epoch % args.epoch_gc_every == 0):
+            # Periodic host GC helps return Python-held objects between long epochs.
+            gc.collect()
 
     run.finish()
 

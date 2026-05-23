@@ -158,9 +158,15 @@ def _build_question_bank(answers: dict[str, Any]) -> list[dict[str, Any]]:
 		goal_y = float(answers["goal_y"]) if answers["goal_y"] is not None else 0.0
 		qa_list.append({
 			"key": "goal",
-			"question": "What is the relative position of the goal in (x, y) meters? Answer as 'x y' with numbers only. (ex. 10.0 5.0)",
-			"answer": f"{goal_x:.1f} {goal_y:.1f}",
-			"label": (goal_x, goal_y),
+			"question": "What is the relative x-position of the goal in meters? Answer with a number only. (ex. 10.0)",
+			"answer": f"{goal_x:.1f}",
+			"label": goal_x,
+		})
+		qa_list.append({
+			"key": "goal",
+			"question": "What is the relative y-position of the goal in meters? Answer with a number only. (ex. 5.0)",
+			"answer": f"{goal_y:.1f}",
+			"label": goal_y,
 		})
 	
 	# Target vehicle related questions
@@ -184,9 +190,15 @@ def _build_question_bank(answers: dict[str, Any]) -> list[dict[str, Any]]:
 			target_y = float(answers["target_y"]) if answers["target_y"] is not None else 0.0
 			qa_list.append({
 				"key": "target_position",
-				"question": f"What is the relative position of the {target_type} {target_idx} in (x, y) meters? Answer as 'x y' with numbers only. (ex. 10.0 5.0)",
-				"answer": f"{target_x:.1f} {target_y:.1f}",
-				"label": (target_x, target_y),
+				"question": f"What is the relative x-position of the {target_type} {target_idx} in meters? Answer with a number only. (ex. 10.0)",
+				"answer": f"{target_x:.1f}",
+				"label": target_x,
+			})
+			qa_list.append({
+				"key": "target_position",
+				"question": f"What is the relative y-position of the {target_type} {target_idx} in meters? Answer with a number only. (ex. 5.0)",
+				"answer": f"{target_y:.1f}",
+				"label": target_y,
 			})
 		
 		# Target heading

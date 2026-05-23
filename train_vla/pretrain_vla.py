@@ -14,7 +14,6 @@ from train_vla.utils.utils import (
 	build_qa_model,
 	save_checkpoint,
 	save_training_config,
-	load_training_config,
 	evaluate_answer_accuracy,
 	flatten_batch,
 	tokenize_text_batch,
@@ -133,10 +132,11 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 			if not prompts:
 				continue
 
-			prompt_ids, answer_ids = tokenize_text_batch(
+			prompt_ids, prompt_mask, answer_ids, answer_mask = tokenize_text_batch(
 				model.tokenizer,
 				prompts,
 				answers,
+				add_eos=cfg.add_eos,
 				device=device,
 				max_prompt_length=cfg.max_prompt_length,
 				max_answer_length=cfg.max_answer_length,
@@ -145,7 +145,7 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 
 			amp_enabled = device.type == "cuda"
 			with torch.autocast(device_type=device.type, dtype=dtype, enabled=amp_enabled):
-				outputs = model(features, prompt_ids, answer_ids=answer_ids)
+				outputs = model(features, prompt_ids=prompt_ids, prompt_mask=prompt_mask, answer_ids=answer_ids, answer_mask=answer_mask)
 				loss = outputs["loss"] / cfg.grad_accum_steps
 
 			if scaler is not None:

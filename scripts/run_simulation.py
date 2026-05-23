@@ -52,12 +52,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--replan_interval_steps", type=int, default=5)
     parser.add_argument("--visualize_mode", type=str, default="all", choices=["all", "success", "failure", "none"])
     parser.add_argument("--save_trajectory", action="store_true", default=False)
+    parser.add_argument("--tag", type=str, default=None)
     return parser.parse_args()
 
 
 def main(args: argparse.Namespace) -> None:
     args.tfrecord_dir = os.path.join(args.tfrecord_dir, args.split)
-    args.output_dir = os.path.join(args.exp_dir, f"simulation_results_split_{args.split}")
+    exp_name = f"simulation_{args.split}"
+    if args.tag is not None:
+        exp_name += f"_{args.tag}"
+    exp_name += f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    args.output_dir = os.path.join(args.exp_dir, exp_name)
+    
     
     from planner.diffusion_planner import DiffusionPlanner
     inference = load_model_for_inference(

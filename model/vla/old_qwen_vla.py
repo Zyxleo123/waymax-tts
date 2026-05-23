@@ -11,7 +11,7 @@ from model.torch_modules.attention import CrossAttentionLayers
 from model.torch_modules.scene_tokenizer import SceneTokenizer
 
 
-class VecSceneQwenVLA(nn.Module):
+class OldVecSceneQwenVLA(nn.Module):
     def __init__(
         self,
         qwen_name="Qwen/Qwen3-0.6B",
@@ -92,21 +92,9 @@ class VecSceneQwenVLA(nn.Module):
         text_emb = self.llm.get_input_embeddings()(prompt_ids)
 
         scene_tokens = scene_tokens.to(text_emb.dtype)
-        scene_mask = torch.ones(
-            (scene_tokens.shape[0], scene_tokens.shape[1]),
-            dtype=prompt_mask.dtype,
-            device=device,
-        )
 
         if answer_ids is not None:
             answer_emb = self.llm.get_input_embeddings()(answer_ids)
-            if answer_mask is not None:
-                answer_labels = answer_ids.masked_fill(answer_mask == 0, -100)
-            else:
-                answer_labels = answer_ids.masked_fill(
-                    answer_ids == self.tokenizer.pad_token_id,
-                    -100,
-                )
             inputs_embeds = torch.cat(
                 [scene_tokens, text_emb, answer_emb],
                 dim=1,
@@ -116,12 +104,8 @@ class VecSceneQwenVLA(nn.Module):
                 [
                     torch.full(scene_tokens.shape[:2], -100, device=device),
                     torch.full(prompt_ids.shape, -100, device=device),
-                    answer_labels,
+                    answer_ids,
                 ],
-                dim=1,
-            )
-            attention_mask = torch.cat(
-                [scene_mask, prompt_mask, answer_mask],
                 dim=1,
             )
         else:
@@ -130,11 +114,12 @@ class VecSceneQwenVLA(nn.Module):
                 dim=1,
             )
             labels = None
-            attention_mask = torch.cat(
-                [scene_mask, prompt_mask],
-                dim=1,
-            )
 
+        attention_mask = torch.ones(
+            (inputs_embeds.shape[0], inputs_embeds.shape[1]),
+            dtype=prompt_mask.dtype,
+            device=device,
+        )
         outputs = self.llm(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -159,19 +144,14 @@ class VecSceneQwenVLA(nn.Module):
         scene_tokens = self._tokenize_scene_features(input_features)
         text_emb = self.llm.get_input_embeddings()(prompt_ids)
         scene_tokens = scene_tokens.to(text_emb.dtype)
-        scene_mask = torch.ones(
-            (scene_tokens.shape[0], scene_tokens.shape[1]),
+
+        inputs_embeds = torch.cat([scene_tokens, text_emb], dim=1)
+        # attention_mask = torch.cat([scene_mask, prompt_mask], dim=1)
+        attention_mask = torch.ones(
+            (inputs_embeds.shape[0], inputs_embeds.shape[1]),
             dtype=prompt_mask.dtype,
             device=device,
         )
-
-        inputs_embeds = torch.cat([scene_tokens, text_emb], dim=1)
-        attention_mask = torch.cat([scene_mask, prompt_mask], dim=1)
-        # attention_mask = torch.ones(
-        #     (inputs_embeds.shape[0], inputs_embeds.shape[1]),
-        #     dtype=prompt_mask.dtype,
-        #     device=device,
-        # )
 
         generated_ids = self.llm.generate(
             inputs_embeds=inputs_embeds,
@@ -179,7 +159,7 @@ class VecSceneQwenVLA(nn.Module):
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self._generation_eos_token_ids(),
+            eos_token_id=self.tokenizer.eos_token_id,
         )
         input_len = inputs_embeds.shape[1]
         if generated_ids.shape[1] > input_len:

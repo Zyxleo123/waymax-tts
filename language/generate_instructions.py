@@ -24,9 +24,10 @@ os.environ["LIBRARY_PATH"] = "/usr/lib64:" + os.environ.get("LIBRARY_PATH", "")
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--input_dir", default="/zfsauton/scratch/eshau/gemma4_31b_output", help="Directory for input gemma4 jsonl files")
-    p.add_argument("--out_dir", default="/zfsauton/scratch/mineuih/waymax_rs/instructions/training", help="Directory to write output instruction jsonl files")
+    # p.add_argument("--out_dir", default="/zfsauton/scratch/mineuih/waymax_rs/instructions/training", help="Directory to write output instruction jsonl files")
+    p.add_argument("--out_dir", default="/zfsauton/scratch/mineuih/waymax_rs/instructions/training_qwen", help="Directory to write output instruction jsonl files")
     p.add_argument("--timesteps", default="10,20,30,40", help="Comma-separated timesteps to extract")
-    p.add_argument("--model-name", default="google/gemma-4-E2B-it")
+    p.add_argument("--model-name", default="Qwen/Qwen3-0.6B")
     p.add_argument("--device", default='cuda')
     p.add_argument("--dry-run", action="store_true", help="Do not call model.generate, store summaries only")
     p.add_argument("--limit-files", type=int, default=0, help="Limit number of input files (for testing)")
@@ -141,7 +142,7 @@ def process_single_tfrecord(args_tuple):
                     raw = inf.readline()
                     try:
                         obj = json.loads(raw.decode("utf-8"))
-                    except Exception:
+                    except Exception as e:
                         continue
                     parsed = obj.get("parsed", {})
                     trajectory_summary = parsed.get("trajectory_summary")

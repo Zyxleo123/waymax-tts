@@ -53,6 +53,8 @@ class DiffusionPretrainConfig:
     log_every: int = 100
     pbar_every: int = 10
     prefetch_size: int = 0
+    recreate_dataloader_each_epoch: bool = True
+    epoch_gc_every: int = 1
     log_jsonl_path: str = "./train_logs.jsonl"
     wandb_project: str = "waymax_vla"
     wandb_name: str = "pretrain_diffusion"
@@ -78,7 +80,7 @@ def parse_args() -> DiffusionPretrainConfig:
 
     parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--steps_per_epoch", type=int, default=1000)
-    parser.add_argument("--save_every", type=int, default=10)
+    parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--save_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_diffusion")
     parser.add_argument("--resume_path", type=str, default=None)
 
@@ -96,7 +98,7 @@ def parse_args() -> DiffusionPretrainConfig:
     parser.add_argument("--map_attr_dim", type=int, default=25)
     parser.add_argument("--tl_attr_dim", type=int, default=9)
     parser.add_argument("--other_dim", type=int, default=15)
-    parser.add_argument("--inst_dim", type=int, default=256)
+    parser.add_argument("--inst_dim", type=int, default=768)
     parser.add_argument("--predict_type", type=str, default="v", choices=["eps", "mu", "v"])
     parser.add_argument("--model_dt", type=float, default=0.2)
 
@@ -110,8 +112,12 @@ def parse_args() -> DiffusionPretrainConfig:
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--pbar_every", type=int, default=10)
     parser.add_argument("--prefetch_size", type=int, default=0)
+    parser.add_argument("--recreate_dataloader_each_epoch", action="store_true")
+    parser.add_argument("--no_recreate_dataloader_each_epoch", action="store_false", dest="recreate_dataloader_each_epoch")
+    parser.set_defaults(recreate_dataloader_each_epoch=True)
+    parser.add_argument("--epoch_gc_every", type=int, default=1)
     parser.add_argument("--log_jsonl_path", type=str, default="./train_logs.jsonl")
-    parser.add_argument("--wandb_project", type=str, default="waymax_vla")
+    parser.add_argument("--wandb_project", type=str, default="pretrain_diffusion")
     parser.add_argument("--wandb_name", type=str, default="pretrain_diffusion")
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])

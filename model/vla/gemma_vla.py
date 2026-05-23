@@ -4,7 +4,7 @@ from typing import Any, Mapping, Optional
 
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
 from model.torch_modules.mlp import MLP
 from model.torch_modules.point_net import PointNet
 from model.torch_modules.attention import CrossAttentionLayers
@@ -24,10 +24,15 @@ class VecSceneGemmaVLA(nn.Module):
     ):
         super().__init__()
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        # self.tokenizer = AutoTokenizer.from_pretrained(
+        #     gemma_name,
+        #     trust_remote_code=True,
+        # )
+        self.processor = AutoProcessor.from_pretrained(
             gemma_name,
             trust_remote_code=True,
         )
+        self.tokenizer = self.processor.tokenizer
 
         self.llm = AutoModelForCausalLM.from_pretrained(
             gemma_name,
@@ -96,6 +101,21 @@ class VecSceneGemmaVLA(nn.Module):
             ],
             dim=1,
         )
+    
+    def _generation_eos_token_ids(self) -> int | list[int]:
+        """EOS for generation: default eos_token_id, optionally plus newline."""
+        eos_ids: list[int] = []
+        if self.tokenizer.eos_token_id is not None:
+            eos_ids.append(int(self.tokenizer.eos_token_id))
+        for tid in self.tokenizer.encode("\n", add_special_tokens=False):
+            tid = int(tid)
+            if tid not in eos_ids:
+                eos_ids.append(tid)
+        if not eos_ids:
+            raise ValueError("Tokenizer has no eos_token_id for generation.")
+        if len(eos_ids) == 1:
+            return eos_ids[0]
+        return eos_ids
 
     def freeze_llm(self):
         for p in self.llm.parameters():
@@ -105,7 +125,9 @@ class VecSceneGemmaVLA(nn.Module):
         self,
         input_features: Mapping[str, torch.Tensor],
         prompt_ids: torch.Tensor,
+        prompt_mask: torch.Tensor,
         answer_ids: torch.Tensor | None = None,
+        answer_mask: torch.Tensor | None = None,
     ):
         scene_tokens = self._tokenize_scene_features(input_features)
         device = scene_tokens.device
@@ -119,44 +141,47 @@ class VecSceneGemmaVLA(nn.Module):
             dtype=prompt_ids.dtype,
             device=device,
         )
-
-        input_ids_for_gemma = torch.cat(
-            [scene_dummy_ids, prompt_ids, answer_ids],
-            dim=1,
+        scene_mask = torch.ones(
+            (batch_size, num_scene_tokens),
+            dtype=prompt_mask.dtype,
+            device=device,
         )
-
-        labels = torch.cat(
-            [
-                torch.full(scene_dummy_ids.shape, -100, dtype=answer_ids.dtype, device=device),
-                torch.full(prompt_ids.shape, -100, dtype=answer_ids.dtype, device=device),
-                answer_ids,
-            ],
-            dim=1,
-        )
-
-        if self.tokenizer.pad_token_id is not None:
-            labels = labels.masked_fill(
-                input_ids_for_gemma == self.tokenizer.pad_token_id,
-                -100,
-            )
-    
-
-        if self.tokenizer.pad_token_id is not None:
-            attention_mask = (input_ids_for_gemma != self.tokenizer.pad_token_id).long()
-            # scene_start = prompt_ids.shape[1]
-            # scene_end = scene_start + num_scene_tokens
-            # attention_mask[:, scene_start:scene_end] = 1
-            attention_mask[:, :num_scene_tokens] = 1
+        if answer_ids is None:
+            input_ids = torch.cat([scene_dummy_ids, prompt_ids], dim=1)
+            attention_mask = torch.cat([scene_mask, prompt_mask], dim=1)
+            labels = None
         else:
-            attention_mask = torch.ones_like(input_ids_for_gemma, dtype=torch.long)
+            input_ids = torch.cat(
+                [scene_dummy_ids, prompt_ids, answer_ids],
+                dim=1,
+            )
+            attention_mask = torch.cat(
+                [scene_mask, prompt_mask, answer_mask],
+                dim=1,
+            )
+            if answer_mask is not None:
+                answer_labels = answer_ids.masked_fill(answer_mask == 0, -100)
+            else:
+                answer_labels = answer_ids.masked_fill(
+                    answer_ids == self.tokenizer.pad_token_id,
+                    -100,
+                )
 
+            labels = torch.cat(
+                [
+                    torch.full(scene_dummy_ids.shape, -100, dtype=answer_ids.dtype, device=device),
+                    torch.full(prompt_ids.shape, -100, dtype=answer_ids.dtype, device=device),
+                    answer_labels,
+                ],
+                dim=1,
+            )
         self._scene_tokens_for_hook = scene_tokens
         self._scene_start_for_hook = 0
         self._scene_len_for_hook = num_scene_tokens
 
         try:
             outputs = self.llm(
-                input_ids=input_ids_for_gemma,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
                 output_hidden_states=False,
@@ -178,6 +203,7 @@ class VecSceneGemmaVLA(nn.Module):
         self,
         input_features: Mapping[str, torch.Tensor],
         prompt_ids: torch.Tensor,  # [B, P]
+        prompt_mask: torch.Tensor,  # [B, P]
         max_new_tokens: int = 8,
     ) -> torch.Tensor:
         device = prompt_ids.device
@@ -196,38 +222,38 @@ class VecSceneGemmaVLA(nn.Module):
             dtype=prompt_ids.dtype,
             device=device,
         )
-        input_ids_for_gemma = torch.cat(
+        scene_mask = torch.ones(
+            (batch_size, num_scene_tokens),
+            dtype=prompt_mask.dtype,
+            device=device,
+        )
+        input_ids = torch.cat(
             [scene_dummy_ids, prompt_ids],
             dim=1,
         )
-        if self.tokenizer.pad_token_id is not None:
-            attention_mask = (input_ids_for_gemma != self.tokenizer.pad_token_id).long()
-            # scene_start = prompt_ids.shape[1]
-            # scene_end = scene_start + num_scene_tokens
-            # attention_mask[:, scene_start:scene_end] = 1
-            attention_mask[:, :num_scene_tokens] = 1
-        else:
-            attention_mask = torch.ones_like(input_ids_for_gemma, dtype=torch.long)
-
+        attention_mask = torch.cat(
+            [scene_mask, prompt_mask],
+            dim=1,
+        )
         self._scene_tokens_for_hook = scene_tokens
         self._scene_start_for_hook = 0
         self._scene_len_for_hook = num_scene_tokens
 
         try:
             generated_ids = self.llm.generate(
-                input_ids=input_ids_for_gemma,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self._generation_eos_token_ids(),
             )
         finally:
             self._scene_tokens_for_hook = None
             self._scene_start_for_hook = None
             self._scene_len_for_hook = None
 
-        input_len = input_ids_for_gemma.shape[1]
+        input_len = input_ids.shape[1]
         new_token_ids = generated_ids[:, input_len:]
         decoded = self.tokenizer.batch_decode(new_token_ids, skip_special_tokens=True)
-        return decoded
+        return [text.strip() for text in decoded]

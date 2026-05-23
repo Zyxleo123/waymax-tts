@@ -67,7 +67,7 @@ def flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str],
 	return stacked_features, prompts, answers, qa_keys
 
 
-def tokenize_text_batch(tokenizer, prompts: list[str], answers: list[str], *, device: torch.device, max_prompt_length: int, max_answer_length: int) -> tuple[torch.Tensor, torch.Tensor]:
+def tokenize_text_batch(tokenizer, prompts: list[str], answers: list[str], add_eos: bool = True, *, device: torch.device, max_prompt_length: int, max_answer_length: int) -> tuple[torch.Tensor, torch.Tensor]:
 	prompt_batch = tokenizer(
 		prompts,
 		return_tensors="pt",
@@ -76,16 +76,55 @@ def tokenize_text_batch(tokenizer, prompts: list[str], answers: list[str], *, de
 		max_length=max_prompt_length,
 		add_special_tokens=True,
 	)
-	answer_batch = tokenizer(
-		answers,
-		return_tensors="pt",
-		padding=True,
-		truncation=True,
-		max_length=max_answer_length,
-		add_special_tokens=False,
-	)
+	prompt_ids = prompt_batch["input_ids"].to(device)
+	prompt_mask = prompt_batch["attention_mask"].to(device)
+	if add_eos:
+		eos_id = tokenizer.eos_token_id
+		pad_id = tokenizer.pad_token_id
+		if pad_id is None:
+			pad_id = eos_id if eos_id is not None else 0
+		max_answer_tokens = max_answer_length
+		if eos_id is not None:
+			max_answer_tokens = max(1, max_answer_length - 1)
 
-	return prompt_batch["input_ids"].to(device), answer_batch["input_ids"].to(device)
+		answer_rows: list[list[int]] = []
+		for answer in answers:
+			ids = tokenizer.encode(str(answer), add_special_tokens=False)
+			if len(ids) > max_answer_tokens:
+				ids = ids[:max_answer_tokens]
+			if eos_id is not None:
+				ids = ids + [int(eos_id)]
+			answer_rows.append(ids)
+		batch_size = len(answer_rows)
+		max_len = max(len(row) for row in answer_rows)
+		answer_ids = torch.full(
+			(batch_size, max_len),
+			fill_value=int(pad_id),
+			dtype=torch.long,
+			device=device,
+		)
+		answer_mask = torch.zeros(
+			(batch_size, max_len),
+			dtype=torch.long,
+			device=device,
+		)
+		for row_idx, row in enumerate(answer_rows):
+			row_len = len(row)
+			answer_ids[row_idx, :row_len] = torch.tensor(row, dtype=torch.long, device=device)
+			answer_mask[row_idx, :row_len] = 1
+	else:
+		answer_batch = tokenizer(
+			answers,
+			return_tensors="pt",
+			padding=True,
+			truncation=True,
+			max_length=max_answer_length,
+			add_special_tokens=False,
+		)
+		answer_ids = answer_batch["input_ids"].to(device)
+		answer_mask = answer_batch["attention_mask"].to(device)
+
+	return prompt_ids, prompt_mask, answer_ids, answer_mask
 
 
 def move_features_to_device(features: Mapping[str, torch.Tensor], device: torch.device, dtype: torch.dtype) -> dict[str, torch.Tensor]:
@@ -117,6 +156,9 @@ def build_qa_model(cfg: VLAPretrainConfig | Mapping[str, Any]) -> Any:
 		model = VecSceneQwenVLA(qwen_name=config["qwen_name"])
 	elif model_type == "gemma":
 		model = VecSceneGemmaVLA(gemma_name=config["gemma_name"])
+	elif model_type == "old_qwen":
+		from model.vla.old_qwen_vla import OldVecSceneQwenVLA
+		model = OldVecSceneQwenVLA(qwen_name=config["qwen_name"])
 	else:
 		raise ValueError(f"Unknown model_type: {model_type}")
 	ensure_tokenizer(model)
@@ -157,6 +199,7 @@ def evaluate_answer_accuracy(
 	max_prompt_length: int,
 	max_answer_length: int,
 	model_type: str,
+	add_eos: bool = True,
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
 	"""Evaluate model accuracy by comparing generated answers with dataset answers.
 	
@@ -191,13 +234,14 @@ def evaluate_answer_accuracy(
 				qa_keys = qa_keys[:remaining]
 				features = {key: value[:remaining] for key, value in features.items()}
 
-			prompt_ids, _ = tokenize_text_batch(
+			prompt_ids, prompt_mask, _, _ = tokenize_text_batch(
 				model.tokenizer,
 				prompts,
 				answers,
 				device=device,
 				max_prompt_length=max_prompt_length,
 				max_answer_length=max_answer_length,
+				add_eos=add_eos,
 			)
 			features = move_features_to_device(features, device, dtype)
 
@@ -206,6 +250,7 @@ def evaluate_answer_accuracy(
 				predictions = model.generate_predictions(
 					input_features=features,
 					prompt_ids=prompt_ids,
+					prompt_mask=prompt_mask,
 					max_new_tokens=max_answer_length
 				)
 
