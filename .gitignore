@@ -52,6 +52,6 @@ videos/
 
 # old
 old/
-
+*.sqlite
 
 waymo-open-dataset/
