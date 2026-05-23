@@ -1,6 +1,9 @@
 # pycache
 **/__pycache__/
 
+# JAX Cache
+.jax_copilation_cache/
+
 # eureka drive
 eureka_drive/
 
