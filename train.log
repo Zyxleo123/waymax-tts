@@ -1,0 +1,18 @@
+/zfsauton/scratch/mineuih/conda_envs/waymax_rs/lib/python3.12/site-packages/orbax/checkpoint/_src/serialization/jax_array_handlers.py:736: UserWarning: Sharding info not provided when restoring. Populating sharding info from sharding file. Please note restoration time will be slightly increased due to reading from file. Note also that this option is unsafe when restoring on a different topology than the checkpoint was saved with.
+  warnings.warn(
+wandb: Currently logged in as: mini-hong1995 (mini-hong1995-seoul-national-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.11
+wandb: Run data is saved locally in /zfsauton/scratch/mineuih/waymax_rs/vla/train_diffusion/train_diffusion_20260523_175137/wandb/run-20260523_175137-wd5pupxd
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run train_diffusion_20260523_175137
+wandb: ⭐️ View project at https://wandb.ai/mini-hong1995-seoul-national-university/pretrain_diffusion
+wandb: 🚀 View run at https://wandb.ai/mini-hong1995-seoul-national-university/pretrain_diffusion/runs/wd5pupxd
+Trying to find cache files for anchor_step=10 in /zfsauton/scratch/mineuih/waymax_rs/cache/...
+Found cache files for anchor_step=10: 1000 files
+Trying to find cache files for anchor_step=20 in /zfsauton/scratch/mineuih/waymax_rs/cache/...
+Found cache files for anchor_step=20: 1000 files
+Trying to find cache files for anchor_step=30 in /zfsauton/scratch/mineuih/waymax_rs/cache/...
+Found cache files for anchor_step=30: 1000 files
+Trying to find cache files for anchor_step=40 in /zfsauton/scratch/mineuih/waymax_rs/cache/...
+Found cache files for anchor_step=40: 1000 files
+Epoch 0001:   0%|          | 0/1000 [00:00<?, ?it/s]Epoch 0001:   0%|          | 1/1000 [00:22<6:14:54, 22.52s/it]Epoch 0001:   0%|          | 2/1000 [00:38<5:11:48, 18.75s/it]Epoch 0001:   0%|          | 4/1000 [00:38<1:56:59,  7.05s/it]Epoch 0001:   1%|          | 6/1000 [00:39<1:02:44,  3.79s/it]Epoch 0001:   1%|          | 7/1000 [00:39<47:30,  2.87s/it]  Epoch 0001:   1%|          | 8/1000 [00:41<43:41,  2.64s/it]Epoch 0001:   1%|          | 10/1000 [00:41<25:36,  1.55s/it]Epoch 0001:   1%|          | 10/1000 [00:41<25:36,  1.55s/it, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   1%|          | 11/1000 [00:41<20:41,  1.26s/it, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   1%|▏         | 13/1000 [00:41<12:58,  1.27it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   1%|▏         | 14/1000 [00:42<10:37,  1.55it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 15/1000 [00:44<16:31,  1.01s/it, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 17/1000 [00:44<10:26,  1.57it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 18/1000 [00:44<08:37,  1.90it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 19/1000 [00:44<07:11,  2.27it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 20/1000 [00:44<05:53,  2.77it/s, loss=1484.8094, gn=5501.90, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 20/1000 [00:45<05:53,  2.77it/s, loss=2217.4399, gn=25961.85, ade=0.00m, fde=0.00m]Epoch 0001:   2%|▏         | 21/1000 [00:45<05:30,  2.96it/s, loss=2217.4399, gn=25961.85, ade=0.00m, fde=0.00m]

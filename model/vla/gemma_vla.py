@@ -20,6 +20,7 @@ class VecSceneGemmaVLA(nn.Module):
         other_dim: int = 15,
         map_dim: int = 25,
         tl_dim: int = 9,
+        num_scene_tokens: int = 32,
         hidden_dim: int = 512,
     ):
         super().__init__()
@@ -50,15 +51,15 @@ class VecSceneGemmaVLA(nn.Module):
             token_dim = self.llm.config.text_config.hidden_size
         else:
             token_dim = self.llm.config.hidden_size
-        # print(token_dim)
         self.scene_tokenizer = SceneTokenizer(
             ego_dim=ego_dim,
+            goal_dim=goal_dim,
             other_dim=other_dim,
             map_attr_dim=map_dim,
             tl_attr_dim=tl_dim,
             hidden_dim=hidden_dim,
             cond_dim=token_dim,
-            token_num=32,
+            num_tokens=num_scene_tokens,
         )
 
         self._scene_tokens_for_hook = None

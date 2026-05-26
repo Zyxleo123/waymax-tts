@@ -13,6 +13,7 @@ import numpy as np
 @dataclass
 class LaneGraphData:
     scenario_id: str
+    lane_ids: np.ndarray
     nodes_xyz: np.ndarray
     node_lane_ids: np.ndarray
     node_point_indices: np.ndarray
@@ -71,6 +72,7 @@ class LaneGraphZipStore:
             }
             return LaneGraphData(
                 scenario_id=scenario_id,
+                lane_ids=lane_ids,
                 nodes_xyz=data["nodes_xyz"].astype(np.float32),
                 node_lane_ids=data["node_lane_ids"].astype(np.int64),
                 node_point_indices=data["node_point_indices"].astype(np.int64),

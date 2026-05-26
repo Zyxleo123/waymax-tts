@@ -153,12 +153,12 @@ def build_qa_model(cfg: VLAPretrainConfig | Mapping[str, Any]) -> Any:
 		config = dict(cfg)
 	model_type = config.get("model_type", "qwen")
 	if model_type == "qwen":
-		model = VecSceneQwenVLA(qwen_name=config["qwen_name"])
+		model = VecSceneQwenVLA(qwen_name=config["qwen_name"], num_scene_tokens=config["num_scene_tokens"])
 	elif model_type == "gemma":
-		model = VecSceneGemmaVLA(gemma_name=config["gemma_name"])
+		model = VecSceneGemmaVLA(gemma_name=config["gemma_name"], num_scene_tokens=config["num_scene_tokens"])
 	elif model_type == "old_qwen":
 		from model.vla.old_qwen_vla import OldVecSceneQwenVLA
-		model = OldVecSceneQwenVLA(qwen_name=config["qwen_name"])
+		model = OldVecSceneQwenVLA(qwen_name=config["qwen_name"], num_scene_tokens=config["num_scene_tokens"])
 	else:
 		raise ValueError(f"Unknown model_type: {model_type}")
 	ensure_tokenizer(model)

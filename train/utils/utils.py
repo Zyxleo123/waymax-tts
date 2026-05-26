@@ -282,8 +282,8 @@ def init_wandb_run(args, config_dict):
 
 
 def wandb_log_train_step(step: int, epoch: int, metrics, ema_loss, lr: float):
-    loss_val = float(metrics["loss"])
-    grad_norm = float(metrics["grad_norm"])
+    loss_val = float(jnp.asarray(jax.device_get(metrics["loss"])).mean())
+    grad_norm = float(jnp.asarray(jax.device_get(metrics["grad_norm"])).mean())
 
     if ema_loss is None:
         ema_loss = loss_val
@@ -298,10 +298,17 @@ def wandb_log_train_step(step: int, epoch: int, metrics, ema_loss, lr: float):
         "train/grad_norm": grad_norm,
         "train/lr": lr,
     }
+    def _log_value(value):
+        arr = jnp.asarray(jax.device_get(value))
+        return float(arr.mean()) if arr.ndim > 0 else float(arr)
+
     for key, value in metrics.items():
         if key in {"loss", "grad_norm"}:
             continue
-        payload[f"train/{key}"] = float(value)
+        try:
+            payload[f"train/{key}"] = _log_value(value)
+        except Exception:
+            continue
 
     wandb.log(payload, step=step)
     return ema_loss, payload
@@ -316,13 +323,13 @@ def log_jsonl(path: str, payload: dict[str, Any]):
 def update_tqdm(pbar, step: int, pbar_every: int, metrics, ema_loss):
     if step % max(1, pbar_every) != 0:
         return ema_loss
-    loss_val = float(metrics["loss"])
-    grad_norm = float(metrics["grad_norm"])
+    loss_val = float(jnp.asarray(jax.device_get(metrics["loss"])).mean())
+    grad_norm = float(jnp.asarray(jax.device_get(metrics["grad_norm"])).mean())
     ade_m = float(metrics.get("traj_ade_m", 0.0))
     fde_m = float(metrics.get("traj_fde_m", 0.0))
     if ema_loss is None:
         ema_loss = loss_val
     else:
         ema_loss = 0.99 * ema_loss + 0.01 * loss_val
-    pbar.set_postfix({"loss": f"{ema_loss:.4f}", "gn": f"{grad_norm:.2f}", "ade": f"{ade_m:.2f}m", "fde": f"{fde_m:.2f}m"})
+    pbar.set_postfix({"loss": f"{ema_loss:.4f}", "gn": f"{grad_norm:.2f}"})
     return ema_loss

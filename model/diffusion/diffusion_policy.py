@@ -40,6 +40,8 @@ class PolicyFeatures:
             "map_valid",
             "traffic_light_features",
             "traffic_light_valid",
+            "inst_features",
+            "inst_valid",
         )
         missing = [k for k in required if k not in features]
         if missing:

@@ -32,7 +32,10 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 	dtype = resolve_dtype(cfg.dtype)
 	torch.backends.cuda.matmul.allow_tf32 = True
 
-	run_name = cfg.wandb_run_name + f"_{cfg.model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+	run_name = cfg.wandb_run_name + f"_{cfg.model_type}"
+	if cfg.tag:
+		run_name += f"_{cfg.tag}"
+	run_name += f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 	output_dir = Path(cfg.output_dir) / run_name
 	output_dir.mkdir(parents=True, exist_ok=True)

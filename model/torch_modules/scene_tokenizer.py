@@ -14,12 +14,13 @@ class SceneTokenizer(nn.Module):
     def __init__(
         self,
         ego_dim: int = 5,
+        goal_dim: int = 3,
         other_dim: int = 15,
         map_attr_dim: int = 25,
         tl_attr_dim: int = 9,
         hidden_dim: int = 1024,
         cond_dim: int = 256,
-        token_num: int = 32,
+        num_tokens: int = 32,
     ) -> None:
         super().__init__()
         self.token_dim = int(cond_dim)
@@ -27,11 +28,11 @@ class SceneTokenizer(nn.Module):
         self.max_other_agents = 128
         self.other_pos_embedding = nn.Parameter(torch.zeros(1, self.max_other_agents, self.token_dim))
         self.ego_tokenizer = MLP([ego_dim, hidden_dim, hidden_dim, cond_dim])
-        self.goal_tokenizer = MLP([3, hidden_dim, hidden_dim, cond_dim])
+        self.goal_tokenizer = MLP([goal_dim, hidden_dim, hidden_dim, cond_dim])
         self.other_tokenizer = MLP([other_dim, hidden_dim, hidden_dim, cond_dim])
         self.tl_tokenizer = MLP([tl_attr_dim, hidden_dim, hidden_dim, cond_dim])
         self.map_tokenizer = PointNet(map_attr_dim, cond_dim)
-        self.cond_tokens = nn.Parameter(torch.zeros(1, token_num, cond_dim))
+        self.cond_tokens = nn.Parameter(torch.zeros(1, num_tokens, cond_dim))
         self.attention = CrossAttentionLayers(cond_dim, cond_dim, num_heads=4, num_layers=4)
 
     def _tokenize_scene_features(

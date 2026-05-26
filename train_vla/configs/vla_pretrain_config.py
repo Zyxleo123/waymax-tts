@@ -44,6 +44,8 @@ class VLAPretrainConfig:
 	num_workers: int = 0
 	pin_memory: bool = True
 	add_eos: bool = False
+	num_scene_tokens: int = 32
+	tag: str | None = None
 
 def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
 	if raw_file_indices is None:
@@ -72,6 +74,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--model_type", type=str, default="gemma", choices=["qwen", "gemma", "old_qwen"])
 	parser.add_argument("--qwen_name", type=str, default="Qwen/Qwen3-0.6B")
 	parser.add_argument("--gemma_name", type=str, default="google/gemma-4-E2B-it")
+	parser.add_argument("--num_scene_tokens", type=int, default=32)
 	parser.add_argument("--batch_size", type=int, default=16)
 	parser.add_argument("--learning_rate", type=float, default=5e-5)
 	parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -90,7 +93,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--no_gradient_checkpointing", action="store_true")
 	parser.add_argument("--dtype", type=str, default="bf16", choices=("bf16", "fp16"))
 	parser.add_argument("--log_every", type=int, default=10)
-	parser.add_argument("--save_every", type=int, default=1000)
+	parser.add_argument("--save_every", type=int, default=5000)
 	parser.add_argument("--eval_num_samples", type=int, default=500)
 	parser.add_argument("--validation_fraction", type=float, default=0.001)
 	parser.add_argument("--max_prompt_length", type=int, default=128)
@@ -98,6 +101,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
 	parser.add_argument("--add_eos", action="store_true", default=False)
+	parser.add_argument("--tag", type=str, default=None, help="Optional tag to add to wandb run name for easier identification.")
 	args = parser.parse_args()
 	if args.add_eos:
 		print("Adding EOS token to answers during training and evaluation.")
@@ -142,4 +146,6 @@ def parse_args() -> VLAPretrainConfig:
 		num_workers=args.num_workers,
 		pin_memory=not args.no_pin_memory,
 		add_eos=args.add_eos,
+		num_scene_tokens=args.num_scene_tokens,
+		tag=args.tag
 	)
