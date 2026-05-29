@@ -93,7 +93,7 @@ def predict_planner_trajectories_with_periodic_replan(
     num_worlds = int(sim_state.log_trajectory.x.shape[0])
     episode_num_steps = int(sim_state.log_trajectory.x.shape[-1])
     start_t_b1 = np.zeros((num_worlds,), dtype=np.int32)
-    
+    instructions = [dict() for _ in range(num_worlds)]   
     rng_key, key_initial = jax.random.split(rng_key)
 
     initial_result = planner.plan_trajectory(
@@ -103,6 +103,9 @@ def predict_planner_trajectories_with_periodic_replan(
         timestep=0,
         mask_goal=cfg.mask_goal
     )
+    instructions_t = getattr(initial_result, "instruction_texts", None)  # touch to avoid unused import warning for VLAPlannerResult
+    for b in range(num_worlds):
+        instructions[b]["t0"] = instructions_t[b] if instructions_t is not None else ""
 
     initial_traj_bt5 = np.asarray(initial_result.trajectory_world_bt5, dtype=np.float32)
     model_horizon_len = int(initial_traj_bt5.shape[1])
@@ -128,6 +131,9 @@ def predict_planner_trajectories_with_periodic_replan(
             timestep=int(step_offset),
             mask_goal=cfg.mask_goal
         )
+        instructions_t = getattr(repl_result, "instruction_texts", None)
+        for b in range(num_worlds):
+            instructions[b][f"t{step_offset}"] = instructions_t[b] if instructions_t is not None else ""
 
         remaining = episode_num_steps - int(step_offset)
         if remaining > 0:
@@ -147,4 +153,4 @@ def predict_planner_trajectories_with_periodic_replan(
         aux=initial_result.aux,
     )
 
-    return pred, replaced_state
+    return pred, replaced_state, instructions

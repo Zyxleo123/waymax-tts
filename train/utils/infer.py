@@ -67,6 +67,9 @@ def _load_checkpoint_metadata(
 
     with meta.open("r", encoding="utf-8") as f:
         metadata = json.load(f)
+    if "pretrained_checkpoint" in metadata:
+        metadata_pretrained = _load_checkpoint_metadata(metadata["pretrained_checkpoint"], None)
+        metadata.update(metadata_pretrained)
 
     missing = [k for k in _REQUIRED_META_KEYS if k not in metadata]
     if missing:

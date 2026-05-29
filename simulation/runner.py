@@ -77,7 +77,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         rng_key = jax.random.PRNGKey(int(args.seed))
         goal_xy_b2, goal_t_b, ego_idx_b = infer_goals_from_sim_state(sim_state)
 
-        pred, replaced_state = predict_planner_trajectories_with_periodic_replan(
+        pred, replaced_state, instructions = predict_planner_trajectories_with_periodic_replan(
             args,
             sim_state,
             goal_xy_b2,
@@ -132,6 +132,15 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
                 }
                 traj_path = output_dir / f"{os.path.basename(tfrecord_path)}.scenario_{scenario_idx:03d}.trajectory.npz"
                 np.savez(traj_path, **traj_data)
+        if args.save_instruction:
+            for i, scenario_idx in enumerate(scenario_indices):
+                instruction_data = {
+                    "scenario_idx": int(scenario_idx),
+                    "ego_idx": int(ego_idx_b[i]),
+                    "instructions": instructions[i],
+                }
+                instruction_path = output_dir / f"{os.path.basename(tfrecord_path)}.scenario_{scenario_idx:03d}.instructions.json"
+                _save_json(instruction_path, instruction_data)
 
         if args.visualize_mode == "all":
             visualize_indices = np.arange(len(scenario_indices))

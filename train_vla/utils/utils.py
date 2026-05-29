@@ -34,6 +34,47 @@ def ensure_tokenizer(model: Any) -> None:
 		model.tokenizer.pad_token = model.tokenizer.eos_token
 
 
+def _resolve_scene_tokenizer_checkpoint(scene_tokenizer_ckpt: str | Path) -> Path:
+	path = Path(scene_tokenizer_ckpt)
+	if path.is_file():
+		return path
+	if path.is_dir():
+		candidate = path / "checkpoints"
+		if candidate.exists():
+			checkpoint_files = sorted(candidate.glob("step_*.pt"))
+			if checkpoint_files:
+				return checkpoint_files[-1]
+		checkpoint_files = sorted(path.glob("step_*.pt"))
+		if checkpoint_files:
+			return checkpoint_files[-1]
+	raise FileNotFoundError(f"Could not resolve scene_tokenizer checkpoint from: {scene_tokenizer_ckpt}")
+
+
+def load_scene_tokenizer_from_checkpoint(model: Any, scene_tokenizer_ckpt: str | Path) -> None:
+	checkpoint_path = _resolve_scene_tokenizer_checkpoint(scene_tokenizer_ckpt)
+	checkpoint = torch.load(checkpoint_path, map_location="cpu")
+	state_dict = checkpoint.get("model_state_dict", checkpoint)
+	prefix = "scene_tokenizer."
+	scene_tokenizer_state = {
+		key[len(prefix):]: value
+		for key, value in state_dict.items()
+		if key.startswith(prefix)
+	}
+	if not scene_tokenizer_state:
+		raise KeyError(
+			f"No scene_tokenizer weights found in checkpoint: {checkpoint_path}"
+		)
+	missing, unexpected = model.scene_tokenizer.load_state_dict(scene_tokenizer_state, strict=False)
+	if missing:
+		raise RuntimeError(
+			f"Missing scene_tokenizer keys when loading {checkpoint_path}: {sorted(missing)}"
+		)
+	if unexpected:
+		raise RuntimeError(
+			f"Unexpected scene_tokenizer keys when loading {checkpoint_path}: {sorted(unexpected)}"
+		)
+
+
 def qa_to_text(qa_item: Mapping[str, Any]) -> tuple[str, str]:
 	question = str(qa_item["question"])
 	answer = str(qa_item["answer"])
@@ -146,21 +187,41 @@ def extract_answer_text(text: str) -> str:
 
 
 
-def build_qa_model(cfg: VLAPretrainConfig | Mapping[str, Any]) -> Any:
-	if isinstance(cfg, VLAPretrainConfig):
+def build_vla_model(cfg: VLAPretrainConfig | Mapping[str, Any]) -> Any:
+	if dataclasses.is_dataclass(cfg):
 		config = dataclasses.asdict(cfg)
-	else:
+	elif isinstance(cfg, Mapping):
 		config = dict(cfg)
+	else:
+		config = dict(vars(cfg))
 	model_type = config.get("model_type", "qwen")
 	if model_type == "qwen":
 		model = VecSceneQwenVLA(qwen_name=config["qwen_name"], num_scene_tokens=config["num_scene_tokens"])
 	elif model_type == "gemma":
-		model = VecSceneGemmaVLA(gemma_name=config["gemma_name"], num_scene_tokens=config["num_scene_tokens"])
+		lora_target_modules = config.get("lora_target_modules")
+		if isinstance(lora_target_modules, str) and lora_target_modules.strip():
+			lora_target_modules = tuple(part.strip() for part in lora_target_modules.split(",") if part.strip())
+		else:
+			lora_target_modules = None
+		model = VecSceneGemmaVLA(
+			gemma_name=config["gemma_name"],
+			num_scene_tokens=config["num_scene_tokens"],
+			use_lora=config.get("use_lora", False),
+			lora_r=config.get("lora_r", 16),
+			lora_alpha=config.get("lora_alpha", 32),
+			lora_dropout=config.get("lora_dropout", 0.05),
+			lora_target_modules=lora_target_modules,
+		)
 	elif model_type == "old_qwen":
 		from model.vla.old_qwen_vla import OldVecSceneQwenVLA
 		model = OldVecSceneQwenVLA(qwen_name=config["qwen_name"], num_scene_tokens=config["num_scene_tokens"])
 	else:
 		raise ValueError(f"Unknown model_type: {model_type}")
+
+	scene_tokenizer_ckpt = config.get("scene_tokenizer_ckpt", None)
+	if scene_tokenizer_ckpt:
+		load_scene_tokenizer_from_checkpoint(model, scene_tokenizer_ckpt)
+
 	ensure_tokenizer(model)
 	return model
 

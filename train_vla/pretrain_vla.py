@@ -11,7 +11,7 @@ from train_vla.configs.vla_pretrain_config import VLAPretrainConfig, parse_args
 from train_vla.utils.utils import (
 	resolve_device,
 	resolve_dtype,
-	build_qa_model,
+	build_vla_model,
 	save_checkpoint,
 	save_training_config,
 	evaluate_answer_accuracy,
@@ -69,7 +69,7 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 		cache_paths=val_cache_paths,
 	) if val_cache_paths else None
 
-	model = build_qa_model(cfg)
+	model = build_vla_model(cfg)
 	if cfg.use_gradient_checkpointing and hasattr(model.llm, "gradient_checkpointing_enable"):
 		model.llm.gradient_checkpointing_enable()
 	if cfg.freeze_llm:

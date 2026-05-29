@@ -243,7 +243,6 @@ def main() -> None:
 		file_indices=list(args.file_indices) if args.file_indices is not None else None,
 		batch_size=int(args.cache_batch_size),
 		shuffle_seed=int(args.shuffle_seed),
-		instruction_seed=int(args.instruction_seed),
 		num_workers=int(args.num_workers),
 		pin_memory=bool(args.pin_memory),
 	)

@@ -26,7 +26,6 @@ class CacheLoaderConfig:
 	cache_paths: tuple[str, ...]
 	batch_size: int = 1
 	shuffle_seed: int = 42
-	instruction_seed: int = 0
 	drop_last: bool = True
 
 
@@ -85,47 +84,6 @@ def _stable_rng(seed: int, *parts: int) -> np.random.Generator:
 	return np.random.default_rng(int.from_bytes(h.digest(), byteorder="little", signed=False))
 
 
-def _sample_instruction_features(
-	features_np: dict[str, np.ndarray],
-	*,
-	seed: int,
-	file_index: int,
-	) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
-	inst_multi = features_np.get("inst_features_multi")
-	inst_valid_multi = features_np.get("inst_valid_multi")
-	inst_single = features_np.get("inst_features")
-	inst_valid_single = features_np.get("inst_valid")
-
-	if inst_multi is None or inst_valid_multi is None:
-		if inst_single is None or inst_valid_single is None:
-			return None, None, None, None
-		return inst_single, inst_valid_single, None, None
-
-	if inst_multi.ndim != 3:
-		raise ValueError(f"inst_features_multi must have shape [N, K, D], got {inst_multi.shape}")
-	if inst_valid_multi.ndim != 2:
-		raise ValueError(f"inst_valid_multi must have shape [N, K], got {inst_valid_multi.shape}")
-	if inst_multi.shape[:2] != inst_valid_multi.shape:
-		raise ValueError(
-			f"Mismatched instruction shapes: {inst_multi.shape} vs {inst_valid_multi.shape}"
-		)
-
-	batch_size, _, embed_dim = inst_multi.shape
-	selected = np.zeros((batch_size, embed_dim), dtype=np.float32)
-	selected_valid = np.zeros((batch_size,), dtype=np.bool_)
-
-	for row_idx in range(batch_size):
-		valid_indices = np.flatnonzero(inst_valid_multi[row_idx])
-		if valid_indices.size == 0:
-			continue
-		rng = _stable_rng(seed, file_index, row_idx)
-		choice = int(valid_indices[rng.integers(0, valid_indices.size)])
-		selected[row_idx] = np.asarray(inst_multi[row_idx, choice], dtype=np.float32)
-		selected_valid[row_idx] = True
-
-	return selected, selected_valid, inst_multi, inst_valid_multi
-
-
 def _convert_metadata_value(value: np.ndarray | Any) -> Any:
 	try:
 		return _npz_to_jax(np.asarray(value))
@@ -166,12 +124,6 @@ class CacheInstructionDatasetJax(IterableDataset[CacheBatch]):
 						if int(value.shape[0]) != total_examples:
 							raise ValueError(f"Mismatched aux length for {key} in {cache_path}")
 
-					inst_selected, inst_valid, inst_multi, inst_valid_multi = _sample_instruction_features(
-						features_np,
-						seed=int(self.cfg.instruction_seed),
-						file_index=file_index,
-					)
-
 					if self.cfg.batch_size <= 0:
 						raise ValueError(f"batch_size must be positive, got {self.cfg.batch_size}")
 
@@ -192,15 +144,7 @@ class CacheInstructionDatasetJax(IterableDataset[CacheBatch]):
 						features = {
 							key: _npz_to_jax(value[batch_indices])
 							for key, value in features_np.items()
-							if key not in {"inst_features", "inst_valid", "inst_features_multi", "inst_valid_multi"}
 						}
-						if inst_selected is not None and inst_valid is not None:
-							features["inst_features"] = _npz_to_jax(inst_selected[batch_indices])
-							features["inst_valid"] = _npz_to_jax(inst_valid[batch_indices])
-							if inst_multi is not None and inst_valid_multi is not None:
-								features["inst_features_multi"] = _npz_to_jax(inst_multi[batch_indices])
-								features["inst_valid_multi"] = _npz_to_jax(inst_valid_multi[batch_indices])
-
 						aux = {
 							key: _npz_to_jax(value[batch_indices])
 							for key, value in aux_np.items()
@@ -226,7 +170,6 @@ def build_cache_dataloader_jax(
 	file_indices: list[int] | None = None,
 	batch_size: int = 1,
 	shuffle_seed: int = 0,
-	instruction_seed: int = 0,
 	drop_last: bool = True,
 	num_workers: int = 0,
 	pin_memory: bool = False,
@@ -247,7 +190,6 @@ def build_cache_dataloader_jax(
 		cache_paths=cache_paths,
 		batch_size=batch_size,
 		shuffle_seed=shuffle_seed,
-		instruction_seed=instruction_seed,
 		drop_last=drop_last,
 	)
 	dataset = CacheInstructionDatasetJax(cfg)
@@ -272,7 +214,6 @@ def _main() -> None:
 		anchor_step=args.anchor_step,
 		batch_size=args.batch_size,
 		shuffle_seed=0,
-		instruction_seed=0,
 		drop_last=bool(args.drop_last),
 	)
 
