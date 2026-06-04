@@ -77,9 +77,13 @@ def get_current_lane_id(
 	lane_ids = lane_ids[lane_mask]
 	assert sim_state.log_trajectory.x.shape[2] == 91, f"Expected 91 timesteps, got {sim_state.log_trajectory.x.shape[2]}"
 	ego_idx = get_ego_idx(sim_state, world_idx)
-	ego_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, timestep])
+	ego_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, timestep])
+	ego_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, timestep])
+	ego_xy = np.stack([ego_x, ego_y], axis=-1)
 	ego_yaw = float(sim_state.log_trajectory.yaw[world_idx][ego_idx, timestep])
-	lane_xy = _to_numpy(sim_state.roadgraph_points.xy[world_idx][lane_mask])
+	lane_x = _to_numpy(sim_state.roadgraph_points.x[world_idx][lane_mask])
+	lane_y = _to_numpy(sim_state.roadgraph_points.y[world_idx][lane_mask])
+	lane_xy = np.stack([lane_x, lane_y], axis=-1)
 	lane_dir_x = _to_numpy(sim_state.roadgraph_points.dir_x[world_idx][lane_mask])
 	lane_dir_y = _to_numpy(sim_state.roadgraph_points.dir_y[world_idx][lane_mask])
 	lane_yaws = np.arctan2(lane_dir_y, lane_dir_x)
@@ -107,19 +111,23 @@ def get_vehicle_lane_id(
 	dist_threshold=2.0,
 	yaw_threshold=np.pi / 6,
 ):
-	num_objects = sim_state.log_trajectory.xy[world_idx].shape[0]
+	num_objects = sim_state.log_trajectory.x[world_idx].shape[0]
 	lane_ids = _to_numpy(sim_state.roadgraph_points.ids[world_idx])
 	lane_types = _to_numpy(sim_state.roadgraph_points.types[world_idx])
 	lane_mask = _isin(lane_types, tuple(CENTERLINE_TYPES))
 	lane_mask = np.logical_and(lane_mask, lane_ids >= 0)
 	lane_mask = np.logical_and(lane_mask, _isin(lane_ids, tuple(target_lane_ids)))
 	lane_ids = lane_ids[lane_mask]
-	lane_xy = _to_numpy(sim_state.roadgraph_points.xy[world_idx][lane_mask])
+	lane_x = _to_numpy(sim_state.roadgraph_points.x[world_idx][lane_mask])
+	lane_y = _to_numpy(sim_state.roadgraph_points.y[world_idx][lane_mask])
+	lane_xy = np.stack([lane_x, lane_y], axis=-1)
 	lane_dir_x = _to_numpy(sim_state.roadgraph_points.dir_x[world_idx][lane_mask])
 	lane_dir_y = _to_numpy(sim_state.roadgraph_points.dir_y[world_idx][lane_mask])
 	lane_yaws = np.arctan2(lane_dir_y, lane_dir_x)
 
-	object_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][:, timestep])
+	object_x = _to_numpy(sim_state.log_trajectory.x[world_idx][:, timestep])
+	object_y = _to_numpy(sim_state.log_trajectory.y[world_idx][:, timestep])
+	object_xy = np.stack([object_x, object_y], axis=-1)
 	object_yaw = _to_numpy(sim_state.log_trajectory.yaw[world_idx][:, timestep])
 	object_valid = _to_numpy(sim_state.log_trajectory.valid[world_idx][:, timestep]).astype(bool)
 	object_valid = object_valid & ~get_ego_mask(sim_state, world_idx) & get_vehicle_mask(sim_state, world_idx)
@@ -154,13 +162,17 @@ def get_vehicle_on_target_lane(
 ):
 	if len(target_lane_ids) == 0:
 		return None, None
-	object_indices = np.arange(sim_state.log_trajectory.xy[world_idx].shape[0])
+	object_indices = np.arange(sim_state.log_trajectory.x[world_idx].shape[0])
 	object_on_target_lane_mask = _isin(object_lane_ids, tuple(target_lane_ids))
-	object_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][:, timestep])
+	object_x = _to_numpy(sim_state.log_trajectory.x[world_idx][:, timestep])
+	object_y = _to_numpy(sim_state.log_trajectory.y[world_idx][:, timestep])
+	object_xy = np.stack([object_x, object_y], axis=-1)
 	object_vx = _to_numpy(sim_state.log_trajectory.vel_x[world_idx][:, timestep])
 	object_vy = _to_numpy(sim_state.log_trajectory.vel_y[world_idx][:, timestep])
 	ego_idx = get_ego_idx(sim_state, world_idx)
-	ego_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, timestep])
+	ego_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, timestep])
+	ego_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, timestep])
+	ego_xy = np.stack([ego_x, ego_y], axis=-1)
 	ego_yaw = float(sim_state.log_trajectory.yaw[world_idx][ego_idx, timestep])
 
 	object_rel_pos = object_xy - ego_xy
@@ -280,7 +292,9 @@ def check_direction(
 	threshold_2=0.2,
 ):
 	ego_idx = get_ego_idx(sim_state, world_idx)
-	ego_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, start_timestep:end_timestep])
+	ego_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, start_timestep:end_timestep])
+	ego_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, start_timestep:end_timestep])
+	ego_xy = np.stack([ego_x, ego_y], axis=-1)
 	ego_yaw = _to_numpy(sim_state.log_trajectory.yaw[world_idx][ego_idx, start_timestep:end_timestep])
 	movement_vector = ego_xy[-1] - ego_xy[0]
 	start_ego_yaw = float(ego_yaw[0])
@@ -383,7 +397,9 @@ def check_risk(
 	risk_lateral_threshold=3.0,
 	risk_longitudinal_threshold=20.0,
 ):
-	object_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][:, start_timestep:end_timestep])
+	object_x = _to_numpy(sim_state.log_trajectory.x[world_idx][:, start_timestep:end_timestep])
+	object_y = _to_numpy(sim_state.log_trajectory.y[world_idx][:, start_timestep:end_timestep])
+	object_xy = np.stack([object_x, object_y], axis=-1)
 	object_yaw = _to_numpy(sim_state.log_trajectory.yaw[world_idx][:, start_timestep:end_timestep])
 	object_types = _to_numpy(sim_state.object_metadata.object_types[world_idx])
 	object_valid = _to_numpy(sim_state.log_trajectory.valid[world_idx][:, start_timestep:end_timestep]).astype(bool)
@@ -436,8 +452,12 @@ def get_goal_info(
 ):
 	ego_idx = get_ego_idx(sim_state, world_idx)
 	ego_yaw = float(sim_state.log_trajectory.yaw[world_idx][ego_idx, timestep])
-	ego_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, timestep])
-	goal_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, -1])
+	ego_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, timestep])
+	ego_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, timestep])
+	ego_xy = np.stack([ego_x, ego_y], axis=-1)
+	goal_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, -1])
+	goal_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, -1])
+	goal_xy = np.stack([goal_x, goal_y], axis=-1)
 	rel_goal_xy = goal_xy - ego_xy
 	rel_goal_x = rel_goal_xy[0] * np.cos(ego_yaw) + rel_goal_xy[1] * np.sin(ego_yaw)
 	rel_goal_y = -rel_goal_xy[0] * np.sin(ego_yaw) + rel_goal_xy[1] * np.cos(ego_yaw)
@@ -447,7 +467,9 @@ def get_goal_info(
 	lane_mask = _isin(lane_types, tuple(CENTERLINE_TYPES))
 	lane_mask = np.logical_and(lane_mask, lane_ids >= 0)
 	lane_ids = lane_ids[lane_mask]
-	lane_xy = _to_numpy(sim_state.roadgraph_points.xy[world_idx][lane_mask])
+	lane_x = _to_numpy(sim_state.roadgraph_points.x[world_idx][lane_mask])
+	lane_y = _to_numpy(sim_state.roadgraph_points.y[world_idx][lane_mask])
+	lane_xy = np.stack([lane_x, lane_y], axis=-1)
 	dists = np.linalg.norm(lane_xy - goal_xy, axis=-1)
 	closest_idx = int(np.argmin(dists))
 	return {
@@ -463,7 +485,9 @@ def check_goal_is_behind(
 	world_idx,
 ):
 	ego_idx = get_ego_idx(sim_state, world_idx)
-	ego_xy = _to_numpy(sim_state.log_trajectory.xy[world_idx][ego_idx, start_timestep])
+	ego_x = _to_numpy(sim_state.log_trajectory.x[world_idx][ego_idx, start_timestep])
+	ego_y = _to_numpy(sim_state.log_trajectory.y[world_idx][ego_idx, start_timestep])
+	ego_xy = np.stack([ego_x, ego_y], axis=-1)
 	ego_yaw = float(sim_state.log_trajectory.yaw[world_idx][ego_idx, start_timestep])
 	relative_xy = np.array(goal_xy) - ego_xy
 	longitudinal_dist = relative_xy[0] * np.cos(ego_yaw) + relative_xy[1] * np.sin(ego_yaw)

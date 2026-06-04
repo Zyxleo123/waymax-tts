@@ -22,7 +22,7 @@ class PreprocessConfig:
     max_segments: int = 128
     max_points_per_segment: int = 128
     num_object_types: int = 8
-    inst_dim: int = 256
+    inst_dim: int = 768
 
 
 @struct.dataclass

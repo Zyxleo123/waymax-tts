@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from torch.nn.utils import clip_grad_norm_
-
+from data.types import PreprocessConfig
 
 @dataclass(frozen=True)
 class VLAPretrainConfig:
@@ -11,7 +11,7 @@ class VLAPretrainConfig:
 	qa_dir: str
 	file_indices: list[int] | None
 	output_dir: str
-	wandb_project: str | None = "waymax_rs_qa"
+	wandb_project: str | None = "pretrain_vla"
 	wandb_run_name: str | None = None
 	wandb_entity: str | None = None
 	wandb_mode: str = "online"
@@ -31,7 +31,6 @@ class VLAPretrainConfig:
 	dataset_num_shards: int = 1
 	include_sdc_paths: bool = False
 	max_num_objects: int = 128
-	anchor_step: int | None = 10
 	freeze_llm: bool = False
 	use_gradient_checkpointing: bool = True
 	dtype: str = "bf16"
@@ -45,12 +44,15 @@ class VLAPretrainConfig:
 	pin_memory: bool = True
 	add_eos: bool = False
 	num_scene_tokens: int = 32
+
 	ego_dim: int = 5
 	goal_dim: int = 3
 	other_dim: int = 15
 	map_dim: int = 25
-	tl_dim: int = 9
+	tl_dim: int = 11
 	scene_hidden_dim: int = 512
+
+	preprocess_cfg: PreprocessConfig = PreprocessConfig()
 	tag: str | None = None
 
 def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
@@ -68,9 +70,9 @@ def _parse_file_indices(raw_file_indices: list[str] | None) -> list[int] | None:
 
 def parse_args() -> VLAPretrainConfig:
 	parser = argparse.ArgumentParser(description="Train SceneQwenVLA on QA data.")
-	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/cache/")
+	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/")
 	parser.add_argument("--tfrecord_dir", type=str, default=None, help="Deprecated alias for --cache_dir.")
-	parser.add_argument("--qa_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/qa_dataset/")
+	parser.add_argument("--qa_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/new_instructions/")
 	parser.add_argument("--file_indices", type=str, nargs="*", default=None)
 	parser.add_argument("--output_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_vla")
 	parser.add_argument("--wandb_project", type=str, default="pretrain_vla")
@@ -106,12 +108,12 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--max_answer_length", type=int, default=8)
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
-	parser.add_argument("--add_eos", action="store_true", default=False)
+	parser.add_argument("--add_eos", action="store_true", default=True)
 	parser.add_argument("--ego_dim", type=int, default=5)
 	parser.add_argument("--goal_dim", type=int, default=3)
 	parser.add_argument("--other_dim", type=int, default=15)
 	parser.add_argument("--map_dim", type=int, default=25)
-	parser.add_argument("--tl_dim", type=int, default=9)
+	parser.add_argument("--tl_dim", type=int, default=11)
 	parser.add_argument("--scene_hidden_dim", type=int, default=512)
 	parser.add_argument("--tag", type=str, default=None, help="Optional tag to add to wandb run name for easier identification.")
 	args = parser.parse_args()
@@ -145,7 +147,6 @@ def parse_args() -> VLAPretrainConfig:
 		dataset_num_shards=args.dataset_num_shards,
 		include_sdc_paths=args.include_sdc_paths,
 		max_num_objects=args.max_num_objects,
-		anchor_step=args.anchor_step,
 		freeze_llm=args.freeze_llm,
 		use_gradient_checkpointing=not args.no_gradient_checkpointing,
 		dtype=args.dtype,

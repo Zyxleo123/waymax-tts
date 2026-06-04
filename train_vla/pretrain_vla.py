@@ -19,12 +19,9 @@ from train_vla.utils.utils import (
 	tokenize_text_batch,
 	move_features_to_device,
 )
-from data.qa_dataloader import build_qa_dataloader, split_cache_paths, resolve_cache_paths
+from data.qa_dataloader_v2 import build_qa_dataloader
+from data.utils import split_cache_paths, resolve_cache_paths
 from datetime import datetime
-
-
-YES_TOKEN = "yes"
-NO_TOKEN = "no"
 
 
 def run_training(cfg: VLAPretrainConfig) -> None:
@@ -42,12 +39,12 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 	save_training_config(cfg, output_dir)
 
 	# Split cache paths into train and validation sets
-	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices, cfg.anchor_step)
+	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
 	train_cache_paths, val_cache_paths = split_cache_paths(all_cache_paths, cfg.validation_fraction)
 
 	train_loader = build_qa_dataloader(
 		cfg.cache_dir,
-		anchor_step=cfg.anchor_step,
+		preprocess_cfg=cfg.preprocess_cfg,
 		file_indices=None,  # use cache_paths instead
 		qa_dir=cfg.qa_dir,
 		batch_size=cfg.batch_size,
@@ -59,7 +56,7 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 
 	val_loader = build_qa_dataloader(
 		cfg.cache_dir,
-		anchor_step=cfg.anchor_step,
+		preprocess_cfg=cfg.preprocess_cfg,
 		file_indices=None,  # use cache_paths instead
 		qa_dir=cfg.qa_dir,
 		batch_size=cfg.batch_size,

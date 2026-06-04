@@ -27,7 +27,7 @@ from simulation.evaluation_utils import (
     check_goal_reaching, 
     check_traffic_light_violation
 )
-from simulation.planning_utils import predict_planner_trajectories_with_periodic_replan
+from simulation.planning_utils import predict_planner_trajectories_with_periodic_replan, get_sdc_indices_for_batched_state
 from planner.abstract_planner import AbstractPlanner, PlannerResult
 
 from simulation.utils import _save_json  # noqa: E402
@@ -52,9 +52,18 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         batch_dims=(args.num_worlds,),
         shuffle_seed=0,
     )
+    if args.scenario_indices is not None:
+        target_scenario_indices = [int(idx) for idx in args.scenario_indices.split(",")]
+    else:
+        target_scenario_indices = None
 
     while tested_scenarios < int(args.num_scenarios):
-        scenario_indices = curr_scenario_index + np.arange(int(args.num_worlds))
+        if target_scenario_indices is not None:
+            scenario_indices = target_scenario_indices[tested_scenarios : tested_scenarios + int(args.num_worlds)]
+            if not scenario_indices:
+                break
+        else:
+            scenario_indices = curr_scenario_index + np.arange(int(args.num_worlds))
         try:
             sim_state, _ = load_scenario_state_batch_fast(ds_cfg, scenario_indices)
         except Exception as e:
@@ -82,6 +91,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             sim_state,
             goal_xy_b2,
             planner,
+            start_timestep=int(args.start_timestep),
             replan_interval_steps=int(args.replan_interval_steps),
             rng_key=rng_key,
         )
@@ -99,20 +109,22 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
         goal_eval = check_goal_reaching(
             replaced_state,
             goal_xy_b2,
+            start_timestep=int(args.start_timestep),
         )
         goal_reached = np.asarray(goal_eval["reached"])
         goal_reached_step = np.asarray(goal_eval["reached_step"])
 
-        overlap_timeseries = np.asarray(rollout["metric_timeseries"]["overlap"])
-        offroad_timeseries = np.asarray(rollout["metric_timeseries"]["offroad"])
+        overlap_timeseries = np.asarray(rollout["metric_timeseries"]["overlap"][int(args.start_timestep):])
+        offroad_timeseries = np.asarray(rollout["metric_timeseries"]["offroad"][int(args.start_timestep):])
+
         overlap = np.zeros((len(scenario_indices),), dtype=bool)
         offroad = np.zeros((len(scenario_indices),), dtype=bool)
         for world_idx in range(len(scenario_indices)):
-            episode_length = goal_reached_step[world_idx] + 1 if goal_reached[world_idx] else overlap_timeseries.shape[-1]
+            episode_length = goal_reached_step[world_idx] + 1 if goal_reached[world_idx] else overlap_timeseries.shape[0]
             if "overlap" in rollout["metric_timeseries"]:
-                overlap[world_idx] = overlap_timeseries[world_idx, :episode_length].sum() > 0
+                overlap[world_idx] = overlap_timeseries[:episode_length, world_idx].sum() > 0
             if "offroad" in rollout["metric_timeseries"]:
-                offroad[world_idx] = offroad_timeseries[world_idx, :episode_length].sum() > 0
+                offroad[world_idx] = offroad_timeseries[:episode_length, world_idx].sum() > 0
         tl_violation = tl_violation & (tl_violation_step < goal_reached_step)
 
         success = goal_reached & (~overlap) & (~offroad) & (~tl_violation)
@@ -147,7 +159,6 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             video_requests = [
                 (str(tfrecord_path), int(idx)) for idx in scenario_indices
             ]
-            ego_start_times = [int(start_t[i]) for i in range(len(scenario_indices))]
         elif args.visualize_mode == "success":
             visualize_indices = np.where(success)[0]
             video_requests = [
@@ -166,8 +177,22 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             (str(tfrecord_path), int(scenario_indices[i]))
             for i in visualize_indices
         ]
-        ego_start_times = [int(start_t[i]) for i in visualize_indices]
+        ego_start_times = [0 for i in visualize_indices]
         ego_trajectories = [np.asarray(pred_traj[i]) for i in visualize_indices]
+        # ego_indices = get_sdc_indices_for_batched_state(replaced_state)
+        # ego_trajectories = [
+        #     np.asarray(
+        #         jnp.stack(
+        #             [
+        #                 replaced_state.log_trajectory.x[i, int(ego_indices[i]), :],
+        #                 replaced_state.log_trajectory.y[i, int(ego_indices[i]), :],
+        #                 replaced_state.log_trajectory.yaw[i, int(ego_indices[i]), :],
+        #                 replaced_state.log_trajectory.vel_x[i, int(ego_indices[i]), :],
+        #                 replaced_state.log_trajectory.vel_y[i, int(ego_indices[i]), :],
+        #             ], axis=-1
+        #         )
+        #     ) for i in visualize_indices
+        # ]
         goal_xys = [np.asarray(goal_xy_b2[i]) for i in visualize_indices]
         if video_requests:
             video_paths = render_videos_batched(

@@ -22,7 +22,7 @@ class VecSceneGemmaVLA(nn.Module):
         goal_dim: int = 3,
         other_dim: int = 15,
         map_dim: int = 25,
-        tl_dim: int = 9,
+        tl_dim: int = 11,
         num_scene_tokens: int = 32,
         hidden_dim: int = 512,
         use_lora: bool = False,

@@ -49,17 +49,19 @@ def _parse_args() -> argparse.Namespace:
         default="/zfsauton/scratch/mineuih/waymax_rs/exp"
     )
     parser.add_argument("--planner", type=str, default="diffusion", choices=["diffusion", "vla"])
+    parser.add_argument("--start_timestep", type=int, default=10)
     parser.add_argument("--mask_goal", action="store_true", default=False)
     parser.add_argument("--use_ema", action="store_true", default=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max_num_objects", type=int, default=128)
     parser.add_argument("--num_worlds", type=int, default=10)
     parser.add_argument("--num_scenarios", type=int, default=1000)
-    parser.add_argument("--replan_interval_steps", type=int, default=5)
+    parser.add_argument("--replan_interval_steps", type=int, default=10)
     parser.add_argument("--visualize_mode", type=str, default="all", choices=["all", "success", "failure", "none"])
     parser.add_argument("--save_trajectory", action="store_true", default=False)
     parser.add_argument("--save_instruction", action="store_true", default=False)
     parser.add_argument("--tag", type=str, default=None)
+    parser.add_argument("--scenario_indices", type=str, default=None)
     return parser.parse_args()
 
 

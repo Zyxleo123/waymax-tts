@@ -40,7 +40,7 @@ def get_sdc_indices_for_batched_state(state_batched) -> np.ndarray:
 def apply_ego_replacements_to_expanded_state(
     expanded_state,
     *,
-    start_t_b: np.ndarray,
+    start_t_b: np.ndarray | int,
     traj_bt5: np.ndarray,
 ):
     """Applies ego trajectory replacements to expanded batched state."""
@@ -57,18 +57,19 @@ def apply_ego_replacements_to_expanded_state(
     horizon = int(traj_bt5.shape[1])
 
     for b in range(traj_bt5.shape[0]):
-        start_t = int(start_t_b[b])
+        start_t = int(start_t_b[b]) if isinstance(start_t_b, np.ndarray) else int(start_t_b)
         end_t = start_t + horizon
         if end_t > num_steps:
             end_t = num_steps
+            
         ego = int(sdc_idx[b])
         sl = slice(start_t, end_t)
         repl = traj_bt5[b]
-        x[b, ego, sl] = repl[:, 0]
-        y[b, ego, sl] = repl[:, 1]
-        yaw[b, ego, sl] = repl[:, 2]
-        vel_x[b, ego, sl] = repl[:, 3]
-        vel_y[b, ego, sl] = repl[:, 4]
+        x[b, ego, sl] = repl[:end_t - start_t, 0]
+        y[b, ego, sl] = repl[:end_t - start_t, 1]
+        yaw[b, ego, sl] = repl[:end_t - start_t, 2]
+        vel_x[b, ego, sl] = repl[:end_t - start_t, 3]
+        vel_y[b, ego, sl] = repl[:end_t - start_t, 4]
         valid[b, ego, sl] = True
 
     new_log = traj.replace(
@@ -88,69 +89,58 @@ def predict_planner_trajectories_with_periodic_replan(
     goal,
     planner: AbstractPlanner,
     replan_interval_steps: int,
+    start_timestep: int,
     rng_key: jax.Array,
 ):
     num_worlds = int(sim_state.log_trajectory.x.shape[0])
     episode_num_steps = int(sim_state.log_trajectory.x.shape[-1])
-    start_t_b1 = np.zeros((num_worlds,), dtype=np.int32)
-    instructions = [dict() for _ in range(num_worlds)]   
-    rng_key, key_initial = jax.random.split(rng_key)
+    start_t_b1 = np.full([num_worlds], start_timestep, dtype=np.int32)
+    instructions = [dict() for _ in range(num_worlds)]
 
-    initial_result = planner.plan_trajectory(
-        sim_state,
-        goal,
-        rng=key_initial,
-        timestep=0,
-        mask_goal=cfg.mask_goal
-    )
-    instructions_t = getattr(initial_result, "instruction_texts", None)  # touch to avoid unused import warning for VLAPlannerResult
-    for b in range(num_worlds):
-        instructions[b]["t0"] = instructions_t[b] if instructions_t is not None else ""
+    replaced_state = sim_state  
 
-    initial_traj_bt5 = np.asarray(initial_result.trajectory_world_bt5, dtype=np.float32)
-    model_horizon_len = int(initial_traj_bt5.shape[1])
-
-    traj_bt5 = np.zeros((num_worlds, episode_num_steps, 5), dtype=np.float32)
-    init_copy_len = min(episode_num_steps, model_horizon_len)
-    traj_bt5[:, :init_copy_len, :] = initial_traj_bt5[:, :init_copy_len, :]
-    
-    max_steps = episode_num_steps - 1
-    interval = int(replan_interval_steps)
-    for step_offset in tqdm(range(interval, max_steps, interval)):
-        replaced_state = apply_ego_replacements_to_expanded_state(
-            sim_state,
-            start_t_b=start_t_b1,
-            traj_bt5=traj_bt5,
-        )
-        rng_key, key_replan = jax.random.split(rng_key)
-
-        repl_result = planner.plan_trajectory(
+    for step_offset in tqdm(range(start_timestep, episode_num_steps - 1, replan_interval_steps)):
+        rng_key, key_plan = jax.random.split(rng_key)
+        plan_result = planner.plan_trajectory(
             replaced_state,
             goal,
-            rng=key_replan,
-            timestep=int(step_offset),
+            rng=key_plan,
+            timestep=step_offset,
             mask_goal=cfg.mask_goal
         )
-        instructions_t = getattr(repl_result, "instruction_texts", None)
+        instruction_t = getattr(plan_result, "instruction_texts", None)
         for b in range(num_worlds):
-            instructions[b][f"t{step_offset}"] = instructions_t[b] if instructions_t is not None else ""
+            instructions[b][f"t{step_offset}"] = instruction_t[b] if instruction_t is not None else ""
+        plan_traj_bt5 = np.asarray(plan_result.trajectory_world_bt5, dtype=np.float32)
+        replaced_state = apply_ego_replacements_to_expanded_state(
+            replaced_state,
+            start_t_b=step_offset,
+            traj_bt5=plan_traj_bt5,
+        )
 
-        remaining = episode_num_steps - int(step_offset)
-        if remaining > 0:
-            repl_traj_bt5 = np.asarray(repl_result.trajectory_world_bt5, dtype=np.float32)
-            copy_len = min(remaining, int(repl_traj_bt5.shape[1]))
-            traj_bt5[:, step_offset : step_offset + copy_len, :] = repl_traj_bt5[:, :copy_len, :]
-
-    world_dt = float(np.asarray(initial_result.aux["world_dt_seconds"], dtype=np.float32).reshape(-1)[0])
+    world_dt = float(np.asarray(plan_result.aux["world_dt_seconds"], dtype=np.float32).reshape(-1)[0])
     world_t = np.arange(episode_num_steps, dtype=np.float32)[None, :] * world_dt
     world_valid = np.ones((num_worlds, episode_num_steps), dtype=bool)
+    traj_bt5 = sim_state_to_ego_trajectory(replaced_state)
 
     pred = PredictionBatch(
-        start_t_b=jnp.zeros((num_worlds,), dtype=jnp.int32),
+        start_t_b=jax.numpy.asarray(start_t_b1, dtype=jnp.int32),
         trajectory_world_bt5=jnp.asarray(traj_bt5, dtype=jnp.float32),
         world_t_seconds_bt=jnp.asarray(world_t, dtype=jnp.float32),
         world_t_valid_bt=jnp.asarray(world_valid),
-        aux=initial_result.aux,
+        aux=plan_result.aux,
     )
 
     return pred, replaced_state, instructions
+
+def sim_state_to_ego_trajectory(sim_state):
+    sdc_indices = get_sdc_indices_for_batched_state(sim_state)
+    traj = sim_state.log_trajectory
+    ego_traj_bt5 = jnp.stack([
+        jnp.take_along_axis(traj.x, sdc_indices[:, None, None], axis=1).squeeze(axis=1),
+        jnp.take_along_axis(traj.y, sdc_indices[:, None, None], axis=1).squeeze(axis=1),
+        jnp.take_along_axis(traj.yaw, sdc_indices[:, None, None], axis=1).squeeze(axis=1),
+        jnp.take_along_axis(traj.vel_x, sdc_indices[:, None, None], axis=1).squeeze(axis=1),
+        jnp.take_along_axis(traj.vel_y, sdc_indices[:, None, None], axis=1).squeeze(axis=1),
+    ], axis=-1)
+    return ego_traj_bt5

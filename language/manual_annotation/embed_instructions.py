@@ -16,7 +16,6 @@ from transformers import AutoModel, AutoTokenizer
 class CacheFileInfo:
 	path: Path
 	tfrecord_index: int
-	anchor_step: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,7 +25,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--cache_dir",
 		type=str,
-		default="/zfsauton/scratch/mineuih/waymax_rs/cache",
+		default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz",
 		help="Directory containing training_tfexample cache NPZ files.",
 	)
 	parser.add_argument(
@@ -38,14 +37,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--out_dir",
 		type=str,
-		default="/zfsauton/scratch/mineuih/waymax_rs/cache_inst",
+		default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz",
 		help="Directory to write updated cache NPZ files.",
-	)
-	parser.add_argument(
-		"--anchor_step",
-		type=int,
-		default=10,
-		help="Only process cache files ending with _t{anchor_step}.npz.",
 	)
 	parser.add_argument(
 		"--model_name",
@@ -75,10 +68,10 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
-def _discover_cache_files(cache_dir: Path, anchor_step: int) -> list[CacheFileInfo]:
-	pattern = re.compile(r"training_tfexample\.tfrecord-(\d{5})-of-\d{5}_t(\d+)\.npz$")
+def _discover_cache_files(cache_dir: Path) -> list[CacheFileInfo]:
+	pattern = re.compile(r"training_tfexample\.tfrecord-(\d{5})-of-\d{5}\.sim_state_cache\.npz$")
 	infos: list[CacheFileInfo] = []
-	for path in sorted(cache_dir.glob(f"*_t{anchor_step}.npz")):
+	for path in sorted(cache_dir.glob("*.npz")):
 		match = pattern.search(path.name)
 		if match is None:
 			continue
@@ -86,7 +79,6 @@ def _discover_cache_files(cache_dir: Path, anchor_step: int) -> list[CacheFileIn
 			CacheFileInfo(
 				path=path,
 				tfrecord_index=int(match.group(1)),
-				anchor_step=int(match.group(2)),
 			)
 		)
 	return infos
@@ -207,11 +199,8 @@ class EmbeddingGemmaEncoder:
 
 def _strip_existing_instruction_keys(payload: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 	keys_to_drop = {
-		"features/inst_features",
-		"features/inst_valid",
-		"features/inst_features_multi",
-		"features/inst_valid_multi",
-		"features/inst_features_mult",
+		"inst_features",
+		"inst_valid",
 	}
 	return {key: value for key, value in payload.items() if key not in keys_to_drop}
 
@@ -231,8 +220,9 @@ def _build_payload_with_instruction_features(
 	else:
 		payload = _strip_existing_instruction_keys(payload)
 
-	payload["features/inst_features"] = inst_features.astype(np.float32)
-	payload["features/inst_valid"] = inst_valid.astype(np.bool_)
+	payload["inst_features"] = inst_features.astype(np.float32)
+	payload["inst_valid"] = inst_valid.astype(np.bool_)
+	payload["inst_timesteps"] = 10 * np.arange(inst_features.shape[1], dtype=np.int32)
 	return payload
 
 
@@ -250,10 +240,10 @@ def main() -> None:
 	out_dir = Path(args.out_dir)
 	out_dir.mkdir(parents=True, exist_ok=True)
 
-	cache_files = _discover_cache_files(cache_dir, args.anchor_step)
+	cache_files = _discover_cache_files(cache_dir)
 	if not cache_files:
 		raise FileNotFoundError(
-			f"No cache files found in {cache_dir} matching *_t{args.anchor_step}.npz"
+			f"No cache files found in {cache_dir}"
 		)
 
 	encoder = EmbeddingGemmaEncoder(
@@ -266,19 +256,21 @@ def main() -> None:
 	for info in tqdm(cache_files, desc="Embedding manual instructions into cache"):
 		with np.load(info.path, allow_pickle=False) as npz_data:
 			if "scenario_index" not in npz_data.files:
-				raise KeyError(f"scenario_index is missing in {info.path}")
-			scenario_indices = np.asarray(npz_data["scenario_index"]).astype(np.int32)
-
-		instruction_texts = _load_instruction_texts(
-				tfrecord_index=info.tfrecord_index,
-				scenario_indices=scenario_indices,
-				anchor_step=info.anchor_step,
-				instruction_dir=instruction_dir,
-		)
+				scenario_indices = np.arange(npz_data["log_trajectory_x"].shape[0], dtype=np.int32)
+			else:
+				scenario_indices = np.asarray(npz_data["scenario_index"]).astype(np.int32)
+		instruction_texts: list[str] = []
+		for anchor_step in [0, 10, 20, 30, 40, 50, 60, 70, 80]:
+			instruction_texts.extend(_load_instruction_texts(
+					tfrecord_index=info.tfrecord_index,
+					scenario_indices=scenario_indices,
+					anchor_step=anchor_step,
+					instruction_dir=instruction_dir,
+			))
 
 		flat_embs = encoder.encode(instruction_texts, batch_size=args.batch_size)
-		inst_features = flat_embs.reshape(scenario_indices.shape[0], -1)
-		inst_valid = np.ones((scenario_indices.shape[0],), dtype=np.bool_)
+		inst_features = flat_embs.reshape(9, scenario_indices.shape[0], -1).transpose(1, 0, 2)
+		inst_valid = np.ones((scenario_indices.shape[0], 9), dtype=np.bool_)
 
 		payload = _build_payload_with_instruction_features(
 			info.path,

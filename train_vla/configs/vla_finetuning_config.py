@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from train_vla.configs.vla_pretrain_config import VLAPretrainConfig
+from data.types import PreprocessConfig
 
 
 SCENE_TOKENIZER_OVERRIDE_FIELDS = (
@@ -17,13 +18,13 @@ SCENE_TOKENIZER_OVERRIDE_FIELDS = (
 	"tl_dim",
 	"scene_hidden_dim",
 	"max_num_objects",
+	"preprocess_cfg",
 )
 
 
 @dataclass(frozen=True)
 class VLAFinetuningConfig:
 	cache_dir: str
-	qa_dir: str
 	instruction_dir: str
 	file_indices: list[int] | None
 	output_dir: str
@@ -60,13 +61,12 @@ class VLAFinetuningConfig:
 	num_workers: int = 0
 	pin_memory: bool = True
 	add_eos: bool = False
-	generate_subgoal: bool = False
 	num_scene_tokens: int = 32
 	ego_dim: int = 5
 	goal_dim: int = 3
 	other_dim: int = 15
 	map_dim: int = 25
-	tl_dim: int = 9
+	tl_dim: int = 11
 	scene_hidden_dim: int = 512
 	pretrained_model_path: str | None = None
 	scene_tokenizer_ckpt: str | None = None
@@ -75,6 +75,8 @@ class VLAFinetuningConfig:
 	lora_alpha: int = 32
 	lora_dropout: float = 0.05
 	lora_target_modules: str | None = None
+
+	preprocess_cfg: PreprocessConfig = PreprocessConfig()
 	tag: str | None = None
 
 
@@ -135,10 +137,9 @@ def _with_scene_tokenizer_overrides(
 
 def parse_args() -> VLAFinetuningConfig:
 	parser = argparse.ArgumentParser(description="Finetune Scene VLA with LoRA.")
-	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/cache/")
+	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/")
 	parser.add_argument("--tfrecord_dir", type=str, default=None, help="Deprecated alias for --cache_dir.")
-	parser.add_argument("--qa_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/qa_dataset/")
-	parser.add_argument("--instruction_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/manual_instruction/")
+	parser.add_argument("--instruction_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/new_instructions/")
 	parser.add_argument("--file_indices", type=str, nargs="*", default=None)
 	parser.add_argument("--output_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/vla/finetune_vla")
 	parser.add_argument("--wandb_project", type=str, default="finetune_vla")
@@ -153,9 +154,9 @@ def parse_args() -> VLAFinetuningConfig:
 	parser.add_argument("--goal_dim", type=int, default=3)
 	parser.add_argument("--other_dim", type=int, default=15)
 	parser.add_argument("--map_dim", type=int, default=25)
-	parser.add_argument("--tl_dim", type=int, default=9)
+	parser.add_argument("--tl_dim", type=int, default=11)
 	parser.add_argument("--scene_hidden_dim", type=int, default=512)
-	parser.add_argument("--batch_size", type=int, default=32)
+	parser.add_argument("--batch_size", type=int, default=16)
 	parser.add_argument("--learning_rate", type=float, default=5e-5)
 	parser.add_argument("--weight_decay", type=float, default=0.01)
 	parser.add_argument("--num_epochs", type=int, default=1000)
@@ -181,7 +182,6 @@ def parse_args() -> VLAFinetuningConfig:
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
 	parser.add_argument("--add_eos", action="store_true", default=False)
-	parser.add_argument("--generate_subgoal", action="store_true", default=False)
 	parser.add_argument("--pretrained_model_path", type=str, default=None)
 	parser.add_argument(
 		"--scene_tokenizer_ckpt",
@@ -204,7 +204,6 @@ def parse_args() -> VLAFinetuningConfig:
 	args = parser.parse_args()
 	cfg = VLAFinetuningConfig(
 		cache_dir=args.cache_dir or args.tfrecord_dir,
-		qa_dir=args.qa_dir,
 		instruction_dir=args.instruction_dir,
 		file_indices=_parse_file_indices(args.file_indices),
 		output_dir=args.output_dir,
@@ -241,7 +240,6 @@ def parse_args() -> VLAFinetuningConfig:
 		num_workers=args.num_workers,
 		pin_memory=not args.no_pin_memory,
 		add_eos=args.add_eos,
-		generate_subgoal=args.generate_subgoal,
 		num_scene_tokens=args.num_scene_tokens,
 		ego_dim=args.ego_dim,
 		goal_dim=args.goal_dim,

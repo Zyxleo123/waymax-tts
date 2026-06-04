@@ -8,7 +8,8 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
-from data.inst_dataloader import build_inst_dataloader, resolve_cache_paths, split_cache_paths
+from data.inst_dataloader_v2 import build_inst_dataloader
+from data.utils import resolve_cache_paths, split_cache_paths
 from train_vla.configs.vla_finetuning_config import VLAFinetuningConfig, parse_args
 from train_vla.utils.utils import (
 	resolve_device,
@@ -41,6 +42,12 @@ def compare_keyword(preds: list[str], labels: list[str]) -> list[float]:
 			accuracies.append(included_keywords / total_keywords)
 	return accuracies
 
+def compare_match(preds: list[str], labels: list[str]) -> list[float]:
+	accuracies = []
+	for pred, label in zip(preds, labels):
+		accuracies.append(1.0 if pred.strip().lower() == label.strip().lower() else 0.0)
+	return accuracies
+
 def compare_subgoal(preds: list[str], labels: list[str]) -> tuple[list[float], list[float]]:
 	format_accuracies = []
 	l2_distances = []
@@ -61,9 +68,9 @@ def compare_subgoal(preds: list[str], labels: list[str]) -> tuple[list[float], l
 	return l2_distances, format_accuracies
 
 def evaluate_accuracy(
-	model, loader, *, device, dtype, max_samples, max_prompt_length, max_answer_length, add_eos, generate_subgoal
+	model, loader, *, device, dtype, max_samples, max_prompt_length, max_answer_length, add_eos
 ):
-	keyword_accuracies, subgoal_l2_distances, subgoal_format_accuracies = [], [], []
+	keyword_accuracies, match_accuracies, subgoal_l2_distances, subgoal_format_accuracies = [], [], [], []
 	was_training = model.training
 	model.eval()
 	with torch.inference_mode():
@@ -99,11 +106,12 @@ def evaluate_accuracy(
 			inst_answers = [model.split_instruction_subgoal_text(a)[0] for a in answers]
 			subgoal_answers = [model.split_instruction_subgoal_text(a)[1] for a in answers]
 			keyword_accuracies.extend(compare_keyword(inst_preds, inst_answers))
-			if generate_subgoal:
-				l2_distances, format_accuracies = compare_subgoal(subgoal_preds, subgoal_answers)
-				subgoal_l2_distances.extend(l2_distances)
-				subgoal_format_accuracies.extend(format_accuracies)
+			match_accuracies.extend(compare_match(inst_preds, inst_answers))
+			l2_distances, format_accuracies = compare_subgoal(subgoal_preds, subgoal_answers)
+			subgoal_l2_distances.extend(l2_distances)
+			subgoal_format_accuracies.extend(format_accuracies)
 	keyword_accuracy = sum(keyword_accuracies) / len(keyword_accuracies) if keyword_accuracies else 0.0
+	match_accuracy = sum(match_accuracies) / len(match_accuracies) if match_accuracies else 0.0
 	subgoal_l2_distance = sum(subgoal_l2_distances) / len(subgoal_l2_distances) if subgoal_l2_distances else 0.0
 	subgoal_format_accuracy = sum(subgoal_format_accuracies) / len(subgoal_format_accuracies) if subgoal_format_accuracies else 0.0
 
@@ -111,6 +119,7 @@ def evaluate_accuracy(
 		model.train()
 	return {
 		"keyword_accuracy": keyword_accuracy,
+		"match_accuracy": match_accuracy,
         "subgoal_l2_distance": subgoal_l2_distance,
 		"subgoal_format_accuracy": subgoal_format_accuracy,
     }
@@ -141,12 +150,12 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 	output_dir.mkdir(parents=True, exist_ok=True)
 	save_training_config(cfg, output_dir)
 
-	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices, cfg.anchor_step)
+	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
 	train_cache_paths, val_cache_paths = split_cache_paths(all_cache_paths, cfg.validation_fraction)
 
 	train_loader = build_inst_dataloader(
 		cfg.cache_dir,
-		anchor_step=cfg.anchor_step,
+		preprocess_cfg=cfg.preprocess_cfg,
 		file_indices=None,
 		instruction_dir=cfg.instruction_dir,
 		batch_size=cfg.batch_size,
@@ -154,12 +163,11 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 		num_workers=cfg.num_workers,
 		pin_memory=cfg.pin_memory,
 		cache_paths=train_cache_paths,
-		generate_subgoal=cfg.generate_subgoal,
 	)
 
 	val_loader = build_inst_dataloader(
 		cfg.cache_dir,
-		anchor_step=cfg.anchor_step,
+		preprocess_cfg=cfg.preprocess_cfg,
 		file_indices=None,
 		instruction_dir=cfg.instruction_dir,
 		batch_size=cfg.batch_size,
@@ -167,7 +175,6 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 		num_workers=cfg.num_workers,
 		pin_memory=cfg.pin_memory,
 		cache_paths=val_cache_paths,
-		generate_subgoal=cfg.generate_subgoal,
 	) if val_cache_paths else None
 
 	model = build_vla_model(cfg)
@@ -310,7 +317,6 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
                         max_prompt_length=cfg.max_prompt_length,
                         max_answer_length=cfg.max_answer_length,
                         add_eos=cfg.add_eos,
-						generate_subgoal=cfg.generate_subgoal,
                     )
 				train_metrics = evaluate_accuracy(
                     model=model,
@@ -321,13 +327,14 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
                     max_prompt_length=cfg.max_prompt_length,
                     max_answer_length=cfg.max_answer_length,
                     add_eos=cfg.add_eos,
-					generate_subgoal=cfg.generate_subgoal,
                 )
 				if wandb_run is not None:
 					wandb_log_dict = {
+						"val_accuracy/match_accuracy": val_metrics["match_accuracy"],
 						"val_accuracy/keyword_accuracy": val_metrics["keyword_accuracy"],
                         "val_accuracy/subgoal_l2_distance": val_metrics["subgoal_l2_distance"],
 						"val_accuracy/subgoal_format_accuracy": val_metrics["subgoal_format_accuracy"],
+						"train_accuracy/match_accuracy": train_metrics["match_accuracy"],
 						"train_accuracy/keyword_accuracy": train_metrics["keyword_accuracy"],
                         "train_accuracy/subgoal_l2_distance": train_metrics["subgoal_l2_distance"],
                         "train_accuracy/subgoal_format_accuracy": train_metrics["subgoal_format_accuracy"],

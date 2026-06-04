@@ -115,6 +115,7 @@ def infer_goals_from_sim_state(sim_state) -> tuple[jnp.ndarray, jnp.ndarray, jnp
 def check_goal_reaching(
     sim_state,
     goal_xy_b2: jnp.ndarray,
+    start_timestep: int = 10,
     *,
     goal_threshold_m: float = 2.0,
 ) -> dict[str, jnp.ndarray]:
@@ -129,7 +130,7 @@ def check_goal_reaching(
         obj_xy_bnt2, ego_indices_b[:, None, None, None], axis=1
     ).squeeze(axis=1)
 
-    dists_bt = jnp.linalg.norm(ego_xy_bt2 - goal_xy_b2[:, None, :], axis=-1)
+    dists_bt = jnp.linalg.norm(ego_xy_bt2[:, start_timestep:] - goal_xy_b2[:, None, :], axis=-1)
 
     min_dist_b = jnp.min(dists_bt, axis=1)
     final_dist_b = dists_bt[:, -1]
@@ -137,7 +138,7 @@ def check_goal_reaching(
 
     reached_b = jnp.any(mask_bl, axis=1)
     # argmax returns 0 if no True values; guard with reached_b to set -1 when not reached
-    first_hit_b = jnp.argmax(mask_bl, axis=1).astype(jnp.int32)
+    first_hit_b = jnp.argmax(mask_bl, axis=1).astype(jnp.int32) + start_timestep
     reached_step_b = jnp.where(reached_b, first_hit_b, -1).astype(jnp.int32)
 
     return {

@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import gc
-import multiprocessing as mp
+import io
 import json
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+import multiprocessing as mp
 import signal
 import sys
+import zipfile
 from glob import glob
 from pathlib import Path
 from typing import Any
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 from tqdm import tqdm
-import os
-import zipfile
-import io
+
 from lane_graph.lane_graph_utils import LaneGraphData
 
 # Allow forcing CPU-only mode via CLI flag `--cpu` or `--no-gpu`, or env var WAYMAX_FORCE_CPU.
@@ -26,7 +26,6 @@ if any(arg in ("--cpu", "--no-gpu") for arg in sys.argv) or os.environ.get("WAYM
 	"true",
 	"yes",
 ):
-	# Prefer JAX explicit platform and hide CUDA devices from CUDA-enabled libraries.
 	os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
 	os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
@@ -42,11 +41,7 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
 	sys.path.insert(0, str(REPO_ROOT))
 
-from waymax import config as waymax_config
-
-from data.scenario_loader import load_scenario_state_fast
-from lane_graph.lane_graph_utils import LaneGraphLoader
-from language.manual_annotation.helpers import (
+from language.manual_annotation.cached_annotation.helpers import (
 	check_direction,
 	check_risk,
 	check_speed,
@@ -55,25 +50,79 @@ from language.manual_annotation.helpers import (
 	extend_lane_id,
 	get_current_lane_id,
 	get_ego_idx,
+	get_goal_info,
 	get_left_lane_id,
 	get_right_lane_id,
-	get_goal_info,
 	get_vehicle_lane_id,
-	get_vehicle_on_target_lane
+	get_vehicle_on_target_lane,
 )
 
+
+SIM_STATE_CACHE_FIELDS = {
+	"object_metadata": {
+		"is_sdc": "object_metadata_is_sdc",
+		"object_types": "object_metadata_object_types",
+	},
+	"log_trajectory": {
+		"x": "log_trajectory_x",
+		"y": "log_trajectory_y",
+		"yaw": "log_trajectory_yaw",
+		"valid": "log_trajectory_valid",
+		"vel_x": "log_trajectory_vel_x",
+		"vel_y": "log_trajectory_vel_y",
+		"speed": "log_trajectory_speed",
+	},
+	"log_traffic_light": {
+		"state": "log_traffic_light_state",
+		"lane_ids": "log_traffic_light_lane_ids",
+		"valid": "log_traffic_light_valid",
+	},
+	"roadgraph_points": {
+		"ids": "roadgraph_points_ids",
+		"types": "roadgraph_points_types",
+		"x": "roadgraph_points_x",
+		"y": "roadgraph_points_y",
+		"dir_x": "roadgraph_points_dir_x",
+		"dir_y": "roadgraph_points_dir_y",
+	},
+}
+
+
+class _Group:
+	pass
+
+
+def _to_world_first(array: np.ndarray) -> np.ndarray:
+	return np.expand_dims(np.asarray(array), axis=0)
+
+
+def _scenario_from_cache(npz_data: np.lib.npyio.NpzFile, scenario_pos: int):
+	sim_state = _Group()
+	for group_name, attributes in SIM_STATE_CACHE_FIELDS.items():
+		group_obj = _Group()
+		for attr_name, field_name in attributes.items():
+			setattr(group_obj, attr_name, _to_world_first(npz_data[field_name][scenario_pos]))
+		setattr(sim_state, group_name, group_obj)
+	return sim_state
+
+
 def _lane_graph_zip_path_for_tfrecord(tfrecord_path: str, lane_graph_dir: str) -> Path:
-    """Maps scenario tfrecord filename to lanegraph shard zip filename."""
-    base = os.path.basename(tfrecord_path)
-    return Path(lane_graph_dir) / f"{base}.lanegraph.zip"
+	base = os.path.basename(tfrecord_path)
+	return Path(lane_graph_dir) / f"{base}.lanegraph.zip"
+
+
+def _sim_state_cache_path_for_tfrecord(tfrecord_path: str, cache_dir: str) -> Path:
+	base = os.path.basename(tfrecord_path)
+	return Path(cache_dir) / f"{base}.sim_state_cache.npz"
 
 
 def _parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
-		description="Load Waymax scenarios, extract annotation dictionaries, and save one JSONL per TFRecord."
+		description="Run manual annotation from cached sim_state npz and lane graph zip."
 	)
 	parser.add_argument("--tfrecord_dir", type=str, default="/zfsauton/scratch/eshau/womd/tf_example/training/", help="Directory containing TFRecord files.")
 	parser.add_argument("--lane_graph_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/lane_graphs/", help="Directory containing matching lane graph zip files.")
+	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/", help="Directory containing cached sim_state npz files.")
 	parser.add_argument("--output_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/new_annotations/", help="Directory where JSONL files will be written.")
 	parser.add_argument("--start_timestep", type=int, default=0, help="Start timestep for the annotation window.")
 	parser.add_argument(
@@ -82,11 +131,15 @@ def _parse_args() -> argparse.Namespace:
 		default=50,
 		help="Length of the annotation window. end_timestep = start_timestep + trajectory_length.",
 	)
-	parser.add_argument("--max_num_objects", type=int, default=128, help="Maximum number of objects to load per scenario.")
 	parser.add_argument("--max_tfrecords", type=int, default=None, help="Optional limit on how many TFRecord files to process.")
 	parser.add_argument("--overwrite", action="store_true", help="Overwrite existing JSONL files.")
+	parser.add_argument(
+		"--num_workers",
+		type=int,
+		default=None,
+		help="Number of parallel worker processes to use. Defaults to the number of CPU cores or TFRecord files, whichever is smaller.",
+	)
 	parser.add_argument("--cpu", "--no-gpu", action="store_true", help="Force CPU-only execution for this script (do not use GPU).")
-	parser.add_argument("--num_workers", type=int, default=None, help="Number of parallel worker processes to use. Defaults to the number of CPU cores or the number of TFRecord files, whichever is smaller.")
 	return parser.parse_args()
 
 
@@ -104,135 +157,6 @@ def _to_jsonable(value: Any) -> Any:
 	return str(value)
 
 
-def _lane_graph_summary(lane_graph: Any | None) -> dict[str, Any]:
-	if lane_graph is None:
-		return {
-			"available": False,
-			"scenario_id": None,
-			"num_nodes": None,
-			"num_lanes": None,
-		}
-
-	return {
-		"available": True,
-		"scenario_id": lane_graph.scenario_id,
-		"num_nodes": int(lane_graph.nodes_xyz.shape[0]),
-		"num_lanes": int(len(lane_graph.lane_id_to_node_range)),
-	}
-
-
-def _process_single_tfrecord(
-	tfrecord_path: str,
-	lane_graph_dir: str,
-	output_dir: str,
-	start_timestep: int,
-	trajectory_length: int,
-	max_num_objects: int,
-	overwrite: bool,
-	show_progress: bool,
-) -> Path:
-	signal.signal(signal.SIGINT, signal.SIG_IGN)
-	tfrecord_path = str(tfrecord_path)
-	output_path = Path(output_dir) / f"{Path(tfrecord_path).name}_t{int(start_timestep)}.jsonl"
-	if output_path.exists() and not overwrite:
-		return output_path
-
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	ds_cfg = dataclasses.replace(
-		waymax_config.WOD_1_3_1_TRAINING,
-		path=str(tfrecord_path),
-		max_num_objects=int(max_num_objects),
-		batch_dims=(1,),
-		shuffle_seed=0,
-	)
-
-	lane_graph_filename = _lane_graph_zip_path_for_tfrecord(str(tfrecord_path), lane_graph_dir)
-	lane_graph_zf = zipfile.ZipFile(lane_graph_filename, "r")
-
-	scenario_index = 0
-	consecutive_failures = 0
-	pbar = tqdm(total=None, desc=f"Processing {Path(tfrecord_path).name}", unit="scenario") if show_progress else None
-	with output_path.open("w", encoding="utf-8") as handle:
-		while True:
-			try:
-				sim_state = load_scenario_state_fast(ds_cfg, scenario_index)
-			except Exception as exc:
-				message = str(exc)
-				if "out of range" in message:
-					break
-				consecutive_failures += 1
-				if consecutive_failures >= 3:
-					break
-				scenario_index += 1
-				continue
-			# print(f"Loaded scenario {scenario_index} from {tfrecord_path}.", flush=True)
-			consecutive_failures = 0
-
-			lane_graph_name = [name for name in lane_graph_zf.namelist() if name.startswith(f"{scenario_index:06d}") and name.endswith(".npz")][0]
-			lane_graph_data = lane_graph_zf.read(lane_graph_name)
-			with np.load(io.BytesIO(lane_graph_data)) as data:
-				scenario_id = str(data["scenario_id"][0])
-				lane_ids = data["lane_ids"].astype(np.int64)
-				lane_starts = data["lane_starts"].astype(np.int64)
-				lane_ends = data["lane_ends"].astype(np.int64)
-				lane_id_to_node_range = {
-					int(lid): (int(start), int(end))
-					for lid, start, end in zip(lane_ids, lane_starts, lane_ends)
-				}
-				lane_graph = LaneGraphData(
-					scenario_id=scenario_id,
-					lane_ids=lane_ids,
-					nodes_xyz=data["nodes_xyz"].astype(np.float32),
-					node_lane_ids=data["node_lane_ids"].astype(np.int64),
-					node_point_indices=data["node_point_indices"].astype(np.int64),
-					polyline_edges=data["polyline_edges"].astype(np.int64),
-					successor_edges=data["successor_edges"].astype(np.int64),
-					predecessor_edges=data["predecessor_edges"].astype(np.int64),
-					left_neighbor_edges=data["left_neighbor_edges"].astype(np.int64),
-					right_neighbor_edges=data["right_neighbor_edges"].astype(np.int64),
-					lane_id_to_node_range=lane_id_to_node_range,
-				)
-
-			record: dict[str, Any] = {
-				"tfrecord_path": Path(tfrecord_path).name,
-				"scenario_index": int(scenario_index),
-				"annotation": extract_annotation_for_scenario(
-					sim_state,
-					lane_graph,
-					start_timestep=int(start_timestep),
-					trajectory_length=int(trajectory_length),
-					world_idx=0,
-				),
-			}
-			handle.write(json.dumps(_to_jsonable(record), ensure_ascii=False))
-			handle.write("\n")
-			del record, sim_state, lane_graph
-			scenario_index += 1
-			if pbar is not None:
-				pbar.update(1)
-
-
-	if pbar is not None:
-		pbar.close()
-	lane_graph_zf.close()
-	gc.collect()
-	return output_path
-
-
-def _terminate_pool_executor(executor: ProcessPoolExecutor) -> None:
-	processes = getattr(executor, "_processes", None)
-	if processes:
-		for process in processes.values():
-			try:
-				process.terminate()
-			except Exception:
-				pass
-	try:
-		executor.shutdown(wait=False, cancel_futures=True)
-	except Exception:
-		pass
-
-
 def extract_annotation_for_scenario(
 	sim_state,
 	lane_graph,
@@ -241,7 +165,7 @@ def extract_annotation_for_scenario(
 	world_idx: int = 0,
 ) -> dict[str, Any]:
 	end_timestep = int(start_timestep) + int(trajectory_length)
-	num_timesteps = int(sim_state.log_trajectory.xy[world_idx].shape[1])
+	num_timesteps = int(sim_state.log_trajectory.x[world_idx].shape[1])
 	end_timestep = min(end_timestep, num_timesteps)
 
 	ego_idx = get_ego_idx(sim_state, world_idx)
@@ -251,7 +175,6 @@ def extract_annotation_for_scenario(
 	start_speed, end_speed, avg_speed = check_speed(sim_state, start_timestep, end_timestep, world_idx)
 	risk_objects = check_risk(sim_state, start_timestep, end_timestep, world_idx)
 	goal_info = get_goal_info(sim_state, start_timestep, world_idx)
-	# vehicle_lane_ids are computed on demand below using NumPy arrays.
 
 	turn_label = "straight"
 	if lane_graph is not None and start_lane_id >= 0 and end_lane_id >= 0 and direction != "straight":
@@ -298,10 +221,9 @@ def extract_annotation_for_scenario(
 			lane_change = "right"
 		else:
 			lane_change = "unknown"
-		
-		
+
 		vehicle_lane_ids = get_vehicle_lane_id(sim_state, start_timestep, extended_lane_ids + extended_left_lane_ids + extended_right_lane_ids, world_idx)
-		
+
 		front_vehicles, rear_vehicles = get_vehicle_on_target_lane(
 			sim_state, start_timestep, extended_lane_ids, vehicle_lane_ids, world_idx
 		)
@@ -322,8 +244,12 @@ def extract_annotation_for_scenario(
 			goal_relation = "unknown"
 		goal_info["goal_relation"] = goal_relation
 
-	start_xy = np.array(sim_state.log_trajectory.xy[world_idx][ego_idx, start_timestep])
-	end_xy = np.array(sim_state.log_trajectory.xy[world_idx][ego_idx, end_timestep - 1])
+	start_x = np.array(sim_state.log_trajectory.x[world_idx][ego_idx, start_timestep])
+	start_y = np.array(sim_state.log_trajectory.y[world_idx][ego_idx, start_timestep])
+	start_xy = np.stack([start_x, start_y], axis=-1)
+	end_x = np.array(sim_state.log_trajectory.x[world_idx][ego_idx, end_timestep - 1])
+	end_y = np.array(sim_state.log_trajectory.y[world_idx][ego_idx, end_timestep - 1])
+	end_xy = np.stack([end_x, end_y], axis=-1)
 	start_yaw = np.array(sim_state.log_trajectory.yaw[world_idx][ego_idx, start_timestep])
 	end_yaw = np.array(sim_state.log_trajectory.yaw[world_idx][ego_idx, end_timestep - 1])
 	relative_end_position = end_xy - start_xy
@@ -334,7 +260,6 @@ def extract_annotation_for_scenario(
 		]
 	)
 	relative_end_yaw = end_yaw - start_yaw
-
 
 	return {
 		"scenario_window": {
@@ -375,12 +300,108 @@ def _iter_tfrecord_paths(tfrecord_dir: str) -> list[Path]:
 	return [Path(path) for path in sorted(glob(str(Path(tfrecord_dir) / "*"))) if Path(path).is_file()]
 
 
-def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
-	path.parent.mkdir(parents=True, exist_ok=True)
-	with path.open("w", encoding="utf-8") as handle:
-		for record in records:
-			handle.write(json.dumps(_to_jsonable(record), ensure_ascii=False))
-			handle.write("\n")
+def _build_lane_graph_from_zip(lane_graph_zf: zipfile.ZipFile, scenario_index: int) -> LaneGraphData:
+	lane_graph_name = [
+		name
+		for name in lane_graph_zf.namelist()
+		if name.startswith(f"{scenario_index:06d}") and name.endswith(".npz")
+	][0]
+	lane_graph_data = lane_graph_zf.read(lane_graph_name)
+	with np.load(io.BytesIO(lane_graph_data)) as data:
+		scenario_id = str(data["scenario_id"][0])
+		lane_ids = data["lane_ids"].astype(np.int64)
+		lane_starts = data["lane_starts"].astype(np.int64)
+		lane_ends = data["lane_ends"].astype(np.int64)
+		lane_id_to_node_range = {
+			int(lid): (int(start), int(end))
+			for lid, start, end in zip(lane_ids, lane_starts, lane_ends)
+		}
+		return LaneGraphData(
+			scenario_id=scenario_id,
+			lane_ids=lane_ids,
+			nodes_xyz=data["nodes_xyz"].astype(np.float32),
+			node_lane_ids=data["node_lane_ids"].astype(np.int64),
+			node_point_indices=data["node_point_indices"].astype(np.int64),
+			polyline_edges=data["polyline_edges"].astype(np.int64),
+			successor_edges=data["successor_edges"].astype(np.int64),
+			predecessor_edges=data["predecessor_edges"].astype(np.int64),
+			left_neighbor_edges=data["left_neighbor_edges"].astype(np.int64),
+			right_neighbor_edges=data["right_neighbor_edges"].astype(np.int64),
+			lane_id_to_node_range=lane_id_to_node_range,
+		)
+
+
+def _process_single_tfrecord(
+	tfrecord_path: str,
+	lane_graph_dir: str,
+	cache_dir: str,
+	output_dir: str,
+	start_timestep: int,
+	trajectory_length: int,
+	overwrite: bool,
+	show_progress: bool,
+) -> Path:
+	signal.signal(signal.SIGINT, signal.SIG_IGN)
+	tfrecord_path = str(tfrecord_path)
+	output_path = Path(output_dir) / f"{Path(tfrecord_path).name}_t{int(start_timestep)}.jsonl"
+	if output_path.exists() and not overwrite:
+		return output_path
+
+	cache_path = _sim_state_cache_path_for_tfrecord(tfrecord_path, cache_dir)
+	if not cache_path.exists():
+		raise FileNotFoundError(f"Missing sim_state cache file: {cache_path}")
+
+	lane_graph_filename = _lane_graph_zip_path_for_tfrecord(tfrecord_path, lane_graph_dir)
+	if not lane_graph_filename.exists():
+		raise FileNotFoundError(f"Missing lane graph zip file: {lane_graph_filename}")
+
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with np.load(cache_path, allow_pickle=True) as cache_npz:
+		scenario_indices = np.asarray(cache_npz["scenario_indices"]).astype(np.int32)
+		with zipfile.ZipFile(lane_graph_filename, "r") as lane_graph_zf:
+			with output_path.open("w", encoding="utf-8") as handle:
+				pbar = (
+					tqdm(total=len(scenario_indices), desc=f"Processing {Path(tfrecord_path).name}", unit="scenario")
+					if show_progress
+					else None
+				)
+				for pos, scenario_index in enumerate(scenario_indices.tolist()):
+					sim_state = _scenario_from_cache(cache_npz, pos)
+					lane_graph = _build_lane_graph_from_zip(lane_graph_zf, int(scenario_index))
+					record: dict[str, Any] = {
+						"tfrecord_path": Path(tfrecord_path).name,
+						"scenario_index": int(scenario_index),
+						"annotation": extract_annotation_for_scenario(
+							sim_state,
+							lane_graph,
+							start_timestep=int(start_timestep),
+							trajectory_length=int(trajectory_length),
+							world_idx=0,
+						),
+					}
+					handle.write(json.dumps(_to_jsonable(record), ensure_ascii=False))
+					handle.write("\n")
+					if pbar is not None:
+						pbar.update(1)
+				if pbar is not None:
+					pbar.close()
+
+	gc.collect()
+	return output_path
+
+
+def _terminate_pool_executor(executor: ProcessPoolExecutor) -> None:
+	processes = getattr(executor, "_processes", None)
+	if processes:
+		for process in processes.values():
+			try:
+				process.terminate()
+			except Exception:
+				pass
+	try:
+		executor.shutdown(wait=False, cancel_futures=True)
+	except Exception:
+		pass
 
 
 def run(args: argparse.Namespace) -> list[Path]:
@@ -394,25 +415,41 @@ def run(args: argparse.Namespace) -> list[Path]:
 	selected_paths = tfrecord_paths if args.max_tfrecords is None else tfrecord_paths[: int(args.max_tfrecords)]
 	max_workers = int(args.num_workers) if args.num_workers is not None else min(len(selected_paths), os.cpu_count() or 1)
 	max_workers = max(1, min(max_workers, len(selected_paths)))
-
-	worker_args = [
-		(
-			str(tfrecord_path),
-			args.lane_graph_dir,
-			str(output_dir),
-			int(args.start_timestep),
-			int(args.trajectory_length),
-			int(args.max_num_objects),
-			bool(args.overwrite),
-			i % args.num_workers == 0,
-		)
-		for i, tfrecord_path in enumerate(selected_paths)
-	]
+	use_multiprocessing = max_workers > 1
 
 	written_paths: list[Path] = []
+	if not use_multiprocessing:
+		for tfrecord_path in selected_paths:
+			written_paths.append(
+				_process_single_tfrecord(
+					tfrecord_path=str(tfrecord_path),
+					lane_graph_dir=args.lane_graph_dir,
+					cache_dir=args.cache_dir,
+					output_dir=str(output_dir),
+					start_timestep=int(args.start_timestep),
+					trajectory_length=int(args.trajectory_length),
+					overwrite=bool(args.overwrite),
+					show_progress=True,
+				)
+			)
+		return written_paths
+
 	executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn"))
 	try:
-		futures = [executor.submit(_process_single_tfrecord, *params) for params in worker_args]
+		futures = [
+			executor.submit(
+				_process_single_tfrecord,
+				str(tfrecord_path),
+				args.lane_graph_dir,
+				args.cache_dir,
+				str(output_dir),
+				int(args.start_timestep),
+				int(args.trajectory_length),
+				bool(args.overwrite),
+				i % max_workers == 0,
+			)
+			for i, tfrecord_path in enumerate(selected_paths)
+		]
 		for future in as_completed(futures):
 			written_paths.append(future.result())
 	except KeyboardInterrupt:
@@ -420,13 +457,14 @@ def run(args: argparse.Namespace) -> list[Path]:
 		raise
 	finally:
 		executor.shutdown(wait=True, cancel_futures=True)
-
 	return written_paths
 
 
 def main() -> None:
 	args = _parse_args()
-	run(args)
+	written_paths = run(args)
+	for path in written_paths:
+		print(path)
 
 
 if __name__ == "__main__":
