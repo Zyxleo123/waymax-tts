@@ -17,7 +17,7 @@ class SceneTokenizer(nnx.Module):
         ego_dim: int = 5,
         other_dim: int = 15,
         map_attr_dim: int = 25,
-        tl_attr_dim: int = 9,
+        tl_attr_dim: int = 11,
         hidden_dim: int = 1024,
         cond_dim: int = 256,
         token_num: int = 32,

@@ -356,6 +356,8 @@ def _build_tl_features(
 	xy_rel = _rotate_xy(xy - origin_xy_b2[:, None, :], heading_b[:, None]) / float(cfg.max_range)
 	st_safe = np.clip(st_bl, 0, 8)
 	st_oh = np.eye(9, dtype=np.float32)[st_safe]
+	# st_safe = np.clip(st_bl, 0, 6)
+	# st_oh = np.eye(7, dtype=np.float32)[st_safe]
 	feat = np.concatenate([xy_rel.astype(np.float32), st_oh], axis=-1)
 	feat = np.where(va_bl[:, :, None], feat, 0.0)
 

@@ -35,7 +35,7 @@ class DiffusionPretrainConfig:
     target_dim: int = 5
     predict_horizon: int = 25
     map_attr_dim: int = 4 + 21
-    tl_attr_dim: int = 2 + 7
+    tl_attr_dim: int = 2 + 9
     other_dim: int = 15
     inst_dim: int = 256
     predict_type: str = "v"
@@ -96,7 +96,7 @@ def parse_args() -> DiffusionPretrainConfig:
     parser.add_argument("--target_dim", type=int, default=5)
     parser.add_argument("--predict_horizon", type=int, default=25)
     parser.add_argument("--map_attr_dim", type=int, default=25)
-    parser.add_argument("--tl_attr_dim", type=int, default=9)
+    parser.add_argument("--tl_attr_dim", type=int, default=11)
     parser.add_argument("--other_dim", type=int, default=15)
     parser.add_argument("--inst_dim", type=int, default=768)
     parser.add_argument("--predict_type", type=str, default="v", choices=["eps", "mu", "v"])

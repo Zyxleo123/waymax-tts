@@ -17,7 +17,7 @@ class SceneTokenizer(nn.Module):
         goal_dim: int = 3,
         other_dim: int = 15,
         map_attr_dim: int = 25,
-        tl_attr_dim: int = 9,
+        tl_attr_dim: int = 11,
         hidden_dim: int = 1024,
         cond_dim: int = 256,
         num_tokens: int = 32,

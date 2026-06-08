@@ -292,8 +292,8 @@ def _build_tl_features(
 
     xy = jnp.stack([x_bl, y_bl], axis=-1)
     xy_rel = _rotate_xy(xy - origin_xy_b2[:, None, :], heading_b[:, None]) / cfg.max_range
-    st_safe = jnp.clip(st_bl, 0, 6)
-    st_oh = jax.nn.one_hot(st_safe, 7, dtype=jnp.float32)
+    st_safe = jnp.clip(st_bl, 0, 8)
+    st_oh = jax.nn.one_hot(st_safe, 9, dtype=jnp.float32)
     feat = jnp.concatenate([xy_rel.astype(jnp.float32), st_oh], axis=-1)
     feat = jnp.where(va_bl[:, :, None], feat, 0.0)
 

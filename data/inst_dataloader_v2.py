@@ -47,7 +47,7 @@ class InstructionCacheLoaderConfig:
 	batch_size: int = 1
 	shuffle_seed: int = 42
 	prompt_text: str = PROMPT
-	anchor_steps: tuple[int, ...] = (0, 10, 20, 30, 40)
+	anchor_steps: tuple[int, ...] = (10,)
 
 
 def _read_instruction_at_offset(data_file: Path, offset: int) -> str:
@@ -99,7 +99,12 @@ class CacheInstructionDataset(IterableDataset[InstructionBatch]):
 		for anchor_step in self.cfg.anchor_steps:
 			for cache_path in cache_paths:
 				cache_file = Path(cache_path)
-				preprocessed = preprocess_cached_npz(cache_file, cfg=self.cfg.preprocess_cfg, anchor_step_override=anchor_step)
+				preprocessed = preprocess_cached_npz(
+					cache_file,
+					cfg=self.cfg.preprocess_cfg, 
+					anchor_step_override=anchor_step,
+					goal_step_override=90,
+				)
 				feature_keys = sorted(preprocessed["features"].keys())
 				total_examples = int(preprocessed["features"][feature_keys[0]].shape[0])
 				for start_index in range(0, total_examples, self.cfg.batch_size):
@@ -118,7 +123,7 @@ class CacheInstructionDataset(IterableDataset[InstructionBatch]):
 
 					prompts: list[str] = []
 					answers: list[str] = []
-					for scenario_index, subgoal_text in zip(scenario_indices.tolist(), subgoal_texts):
+					for scenario_index, subgoal_text in zip(scenario_indices[start_index:end_index].tolist(), subgoal_texts):
 						prompts.append(self.cfg.prompt_text)
 						instruction = _load_instruction_for_scenario(
 							Path(self.cfg.instruction_dir),

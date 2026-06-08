@@ -174,7 +174,7 @@ class VecSceneGemmaVLA(nn.Module):
             "goal_dim": int(pick("goal_dim", 3)),
             "other_dim": int(pick("other_dim", 15)),
             "map_dim": int(pick("map_dim", 25)),
-            "tl_dim": int(pick("tl_dim", 9)),
+            "tl_dim": int(pick("tl_dim", 11)),
             "num_scene_tokens": int(pick("num_scene_tokens", 32)),
             "hidden_dim": int(pick("hidden_dim", 512)),
             "use_lora": bool(pick("use_lora", False)),
