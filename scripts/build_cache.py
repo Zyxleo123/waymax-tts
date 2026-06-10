@@ -3,292 +3,237 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import os
+import sys
+from glob import glob
 from pathlib import Path
-from typing import Iterable
 
-
-# Reduce TensorFlow/XLA startup noise and keep TF from competing for GPU memory.
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-os.environ.setdefault("AUTOGRAPH_VERBOSITY", "0")
-os.environ.setdefault("GLOG_minloglevel", "2")
-os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
-os.environ.setdefault("JAX_LOGGING_LEVEL", "ERROR")
-os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
-
-import jax
 import numpy as np
+from tqdm import tqdm
 
-from data.preprocess import preprocess_simulator_state
-from data.types import PreprocessConfig
-
-
-def _parse_int_list(tokens: Iterable[str] | None) -> list[int] | None:
-	if tokens is None:
-		return None
-	parsed: list[int] = []
-	for token in tokens:
-		for part in token.split(","):
-			part = part.strip()
-			if part:
-				parsed.append(int(part))
-	return parsed or None
+# Allow forcing CPU-only mode via CLI flag `--cpu` / `--no-gpu`, or env var WAYMAX_FORCE_CPU.
+# This must be set before importing modules that may initialize GPU backends.
+if any(arg in ("--cpu", "--no-gpu") for arg in sys.argv) or os.environ.get("WAYMAX_FORCE_CPU", "").lower() in (
+	"1",
+	"true",
+	"yes",
+):
+	os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+	os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 
-def _resolve_tfrecord_paths(tfrecord_dir: str, file_indices: list[int] | None) -> tuple[str, ...]:
-	directory = Path(tfrecord_dir)
-	if not directory.exists():
-		raise FileNotFoundError(f"tfrecord_dir does not exist: {tfrecord_dir}")
-	if not directory.is_dir():
-		raise NotADirectoryError(f"tfrecord_dir is not a directory: {tfrecord_dir}")
-
-	if file_indices is not None:
-		return tuple(
-			str(directory / f"training_tfexample.tfrecord-{int(file_idx):05d}-of-01000")
-			for file_idx in file_indices
-		)
-
-	paths = sorted(directory.glob("training_tfexample.tfrecord-*-of-*"))
-	if not paths:
-		raise FileNotFoundError(
-			f"No training_tfexample.tfrecord shards found in {tfrecord_dir}. "
-			"Expected files like training_tfexample.tfrecord-00000-of-01000."
-		)
-	return tuple(str(path) for path in paths)
+def _find_repo_root(start: Path) -> Path:
+	for candidate in [start, *start.parents]:
+		if (candidate / "README.md").exists() and (candidate / "data").is_dir():
+			return candidate
+	raise FileNotFoundError("Could not find the repository root.")
 
 
-def _build_waymax_dataset_config(tfrecord_path: str, args) -> object:
-	from waymax import config as waymax_config
+REPO_ROOT = _find_repo_root(Path(__file__).resolve())
+if str(REPO_ROOT) not in sys.path:
+	sys.path.insert(0, str(REPO_ROOT))
 
-	base_cfg = waymax_config.WOD_1_3_1_TRAINING
-	cfg_fields = {field.name for field in dataclasses.fields(base_cfg)}
+from waymax import config as waymax_config
 
-	replace_kwargs: dict[str, object] = {
-		"path": str(tfrecord_path),
-		"max_num_objects": int(args.max_num_objects),
-		"batch_dims": (int(args.batch_size),),
-		"shuffle_seed": int(args.shuffle_seed),
-		"shuffle_buffer_size": int(args.shuffle_buffer_size),
+from data.scenario_loader import load_scenario_state_fast
+
+
+# Fields explicitly used by language/manual_annotation/annotation.py and helpers.py.
+SIM_STATE_FIELD_EXTRACTORS = {
+	"object_metadata_is_sdc": lambda sim_state, world_idx: np.asarray(sim_state.object_metadata.is_sdc[world_idx]),
+	"object_metadata_object_types": lambda sim_state, world_idx: np.asarray(sim_state.object_metadata.object_types[world_idx]),
+	"log_trajectory_timestamp_micros": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.timestamp_micros[world_idx]),
+	"log_trajectory_x": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.x[world_idx]),
+	"log_trajectory_y": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.y[world_idx]),
+	"log_trajectory_yaw": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.yaw[world_idx]),
+	"log_trajectory_valid": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.valid[world_idx]),
+	"log_trajectory_vel_x": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.vel_x[world_idx]),
+	"log_trajectory_vel_y": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.vel_y[world_idx]),
+	"log_trajectory_speed": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.speed[world_idx]),
+	"log_trajectory_length": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.length[world_idx]),
+	"log_trajectory_width": lambda sim_state, world_idx: np.asarray(sim_state.log_trajectory.width[world_idx]),
+	"log_traffic_light_state": lambda sim_state, world_idx: np.asarray(sim_state.log_traffic_light.state[world_idx]),
+	"log_traffic_light_x": lambda sim_state, world_idx: np.asarray(sim_state.log_traffic_light.x[world_idx]),
+	"log_traffic_light_y": lambda sim_state, world_idx: np.asarray(sim_state.log_traffic_light.y[world_idx]),
+	"log_traffic_light_lane_ids": lambda sim_state, world_idx: np.asarray(sim_state.log_traffic_light.lane_ids[world_idx]),
+	"log_traffic_light_valid": lambda sim_state, world_idx: np.asarray(sim_state.log_traffic_light.valid[world_idx]),
+	"roadgraph_points_x": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.x[world_idx]),
+	"roadgraph_points_y": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.y[world_idx]),
+	"roadgraph_points_ids": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.ids[world_idx]),
+	"roadgraph_points_types": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.types[world_idx]),
+	"roadgraph_points_valid": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.valid[world_idx]),
+	"roadgraph_points_dir_x": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.dir_x[world_idx]),
+	"roadgraph_points_dir_y": lambda sim_state, world_idx: np.asarray(sim_state.roadgraph_points.dir_y[world_idx]),
+}
+
+
+def _parse_args() -> argparse.Namespace:
+	parser = argparse.ArgumentParser(
+		description="Cache sim_state attributes used by manual annotation into one npz per TFRecord."
+	)
+	parser.add_argument(
+		"--tfrecord_dir",
+		type=str,
+		default="/zfsauton/scratch/eshau/womd/tf_example/training/",
+		help="Directory containing TFRecord files.",
+	)
+	parser.add_argument(
+		"--output_dir",
+		type=str,
+		default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/",
+		help="Directory where cached npz files will be written.",
+	)
+	parser.add_argument(
+		"--max_num_objects",
+		type=int,
+		default=128,
+		help="Maximum number of objects to load per scenario while reading TFRecord.",
+	)
+	parser.add_argument(
+		"--max_tfrecords",
+		type=int,
+		default=None,
+		help="Optional limit on how many TFRecord files to process.",
+	)
+	parser.add_argument("--overwrite", action="store_true", help="Overwrite existing npz files.")
+	parser.add_argument(
+		"--world_idx",
+		type=int,
+		default=0,
+		help="World index to cache (default: 0).",
+	)
+	parser.add_argument(
+		"--cpu",
+		"--no-gpu",
+		action="store_true",
+		help="Force CPU-only execution for this script (do not use GPU).",
+	)
+	parser.add_argument(
+		"--start_from",
+		type=int,
+		default=0,
+    )
+	return parser.parse_args()
+
+
+def _iter_tfrecord_paths(tfrecord_dir: str) -> list[Path]:
+	return [Path(path) for path in sorted(glob(str(Path(tfrecord_dir) / "*"))) if Path(path).is_file()]
+
+
+def _pack_per_scenario_arrays(arrays: list[np.ndarray]) -> np.ndarray:
+	if not arrays:
+		return np.empty((0,), dtype=np.float32)
+	try:
+		return np.stack(arrays, axis=0)
+	except ValueError:
+		packed = np.empty((len(arrays),), dtype=object)
+		for i, item in enumerate(arrays):
+			packed[i] = item
+		return packed
+
+
+def _extract_used_sim_state_fields(sim_state, world_idx: int) -> dict[str, np.ndarray]:
+	return {
+		field_name: extractor(sim_state, world_idx)
+		for field_name, extractor in SIM_STATE_FIELD_EXTRACTORS.items()
 	}
 
-	def _set_if_supported(field: str, value: object) -> None:
-		if field in cfg_fields:
-			replace_kwargs[field] = value
 
-	_set_if_supported("num_shards", int(args.dataset_num_shards))
-	_set_if_supported("include_sdc_paths", bool(args.dataset_include_sdc_paths))
-
-	max_num_rg_points = int(args.dataset_max_num_rg_points)
-	if "max_num_rg_points" in cfg_fields:
-		replace_kwargs["max_num_rg_points"] = max_num_rg_points
-
-	return dataclasses.replace(base_cfg, **replace_kwargs)
-
-
-def _build_preprocess_config(args) -> PreprocessConfig:
-	return PreprocessConfig(
-		model_dt=float(args.model_dt),
-		world_dt_fallback=float(args.world_dt_fallback),
-		max_range=float(args.max_range),
-		ego_range=float(args.ego_range),
-		max_velocity=float(args.max_velocity),
-		max_width=float(args.max_width),
-		max_tl_points=int(args.max_tl_points),
-		num_map_type_classes=int(args.num_map_type_classes),
-		predict_horizon=int(args.predict_horizon),
-		max_segments=int(args.max_segments),
-		max_points_per_segment=int(args.max_points_per_segment),
-		num_object_types=int(args.num_object_types),
-		inst_dim=int(args.inst_dim),
-	)
-
-
-def _iter_simulator_state_batches(cfg) -> Iterable[object]:
-	import tensorflow as tf
-	from waymax import dataloader
-	from waymax.dataloader import womd_factories
-
-	tf.get_logger().setLevel("ERROR")
-	try:
-		tf.autograph.set_verbosity(0)
-	except Exception:
-		pass
-	try:
-		tf.config.set_visible_devices([], "GPU")
-	except Exception:
-		pass
-
-	raw_ds = tf.data.TFRecordDataset([cfg.path]).batch(int(cfg.batch_dims[0]), drop_remainder=False)
-	for serialized_batch in raw_ds:
-		processed = dataloader.preprocess_serialized_womd_data(serialized_batch, cfg)
-		yield womd_factories.simulator_state_from_womd_dict(
-			processed, include_sdc_paths=cfg.include_sdc_paths
-		)
-
-
-def _append_tree(accum: dict[str, list[np.ndarray]], tree: dict[str, jax.Array]) -> None:
-	for key, value in tree.items():
-		if key not in accum:
-			accum[key] = []
-		accum[key].append(np.asarray(jax.device_get(value)))
-
-
-def _concat_tree(accum: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
-	merged: dict[str, np.ndarray] = {}
-	for key, chunks in accum.items():
-		if not chunks:
-			continue
-		merged[key] = chunks[0] if len(chunks) == 1 else np.concatenate(chunks, axis=0)
-	return merged
-
-
-def _save_cache_npz(
-	output_path: Path,
-	features: dict[str, np.ndarray],
-	aux: dict[str, np.ndarray],
-	metadata: dict[str, np.ndarray],
-) -> None:
-	payload: dict[str, np.ndarray] = {}
-	payload.update({f"features/{k}": v for k, v in features.items()})
-	payload.update({f"aux/{k}": v for k, v in aux.items()})
-	payload.update(metadata)
-	np.savez(output_path, **payload)
-
-
-def build_cache_for_tfrecord(
-	*,
-	tfrecord_path: str,
+def cache_single_tfrecord(
+	tfrecord_path: Path,
 	output_dir: Path,
-	preprocess_cfg: PreprocessConfig,
-	target_timestep: int,
-	goal_step_override: int | None,
-	seed: int,
-	args,
+	max_num_objects: int,
+	world_idx: int,
+	overwrite: bool,
 ) -> Path:
-	cfg = _build_waymax_dataset_config(tfrecord_path, args)
-	rng = jax.random.PRNGKey(int(seed))
-	
 	output_dir.mkdir(parents=True, exist_ok=True)
-	output_path = output_dir / f"{Path(tfrecord_path).name}_t{target_timestep}.npz"
-	if output_path.exists():
-		print(f"Cache already exists, skipping: {output_path}")
+	output_path = output_dir / f"{tfrecord_path.name}.sim_state_cache.npz"
+	if output_path.exists() and not overwrite:
 		return output_path
 
-	feature_chunks: dict[str, list[np.ndarray]] = {}
-	aux_chunks: dict[str, list[np.ndarray]] = {}
-	scenario_indices: list[np.ndarray] = []
-
-	scenario_counter = 0
-	for state_batch in _iter_simulator_state_batches(cfg):
-		batch_size = int(state_batch.log_trajectory.x.shape[0])
-		batch_indices = np.arange(scenario_counter, scenario_counter + batch_size, dtype=np.int32)
-		scenario_indices.append(batch_indices)
-		scenario_counter += batch_size
-
-		rng, rng_pre = jax.random.split(rng)
-		pre_batch, _ = preprocess_simulator_state(
-			state_batch,
-			rng_pre,
-			preprocess_cfg,
-			anchor_step_override=int(target_timestep),
-			goal_step_override=goal_step_override,
-		)
-
-		_append_tree(feature_chunks, pre_batch.features)
-		_append_tree(aux_chunks, pre_batch.aux)
-
-	features = _concat_tree(feature_chunks)
-	aux = _concat_tree(aux_chunks)
-	if not features:
-		raise ValueError(f"No features produced for tfrecord: {tfrecord_path}")
-
-	scenario_index = (
-		scenario_indices[0]
-		if len(scenario_indices) == 1
-		else np.concatenate(scenario_indices, axis=0)
+	ds_cfg = dataclasses.replace(
+		waymax_config.WOD_1_3_1_TRAINING,
+		path=str(tfrecord_path),
+		max_num_objects=int(max_num_objects),
+		batch_dims=(1,),
+		shuffle_seed=0,
 	)
-	metadata = {
-		"scenario_index": scenario_index,
-		"timestep": np.full_like(scenario_index, int(target_timestep)),
-		"tfrecord_path": np.asarray(str(tfrecord_path), dtype=np.bytes_),
-	}
 
-	_save_cache_npz(output_path, features, aux, metadata)
+	per_field: dict[str, list[np.ndarray]] = {
+		field_name: [] for field_name in SIM_STATE_FIELD_EXTRACTORS
+	}
+	scenario_indices: list[int] = []
+
+	scenario_index = 0
+	consecutive_failures = 0
+	pbar = tqdm(total=None, desc=f"Caching {tfrecord_path.name}", unit="scenario")
+	while True:
+		try:
+			sim_state = load_scenario_state_fast(ds_cfg, scenario_index)
+		except Exception as exc:
+			message = str(exc)
+			if "out of range" in message:
+				break
+			consecutive_failures += 1
+			if consecutive_failures >= 3:
+				break
+			scenario_index += 1
+			continue
+
+		consecutive_failures = 0
+		extracted = _extract_used_sim_state_fields(sim_state, world_idx=world_idx)
+		for field_name, value in extracted.items():
+			per_field[field_name].append(value)
+		scenario_indices.append(scenario_index)
+		scenario_index += 1
+		pbar.update(1)
+
+	pbar.close()
+
+	packed: dict[str, np.ndarray] = {
+		"tfrecord_path": np.asarray(str(tfrecord_path), dtype=np.str_),
+		"tfrecord_name": np.asarray(tfrecord_path.name, dtype=np.str_),
+		"world_idx": np.asarray(int(world_idx), dtype=np.int32),
+		"num_scenarios": np.asarray(len(scenario_indices), dtype=np.int32),
+		"scenario_indices": np.asarray(scenario_indices, dtype=np.int32),
+		"cached_field_names": np.asarray(sorted(SIM_STATE_FIELD_EXTRACTORS.keys()), dtype=np.str_),
+	}
+	for field_name, values in per_field.items():
+		packed[field_name] = _pack_per_scenario_arrays(values)
+
+	np.savez_compressed(output_path, **packed)
 	return output_path
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-	parser = argparse.ArgumentParser(description="Build Waymo cache .npz files per TFRecord shard.")
-	parser.add_argument("--tfrecord_dir", type=str, default=None, help="Directory with TFRecord shards.")
-	parser.add_argument(
-		"--tfrecord_paths",
-		type=str,
-		nargs="*",
-		default=None,
-		help="Optional explicit TFRecord shard paths; overrides --tfrecord_dir.",
-	)
-	parser.add_argument(
-		"--file_indices",
-		type=str,
-		nargs="*",
-		default=None,
-		help="Optional shard indices, e.g. --file_indices 0 1 2 or --file_indices 0,1,2.",
-	)
-	parser.add_argument("--output_dir", type=str, required=True, help="Directory to write .npz cache files.")
-	parser.add_argument("--target_timestep", type=int, required=True, help="Anchor timestep to cache.")
-	parser.add_argument("--goal_step", type=int, default=None, help="Optional goal timestep override.")
-	parser.add_argument("--seed", type=int, default=0)
+def run(args: argparse.Namespace) -> list[Path]:
+	tfrecord_paths = _iter_tfrecord_paths(args.tfrecord_dir)
+	if not tfrecord_paths:
+		raise FileNotFoundError(f"No TFRecord files found in {args.tfrecord_dir}.")
+	tfrecord_paths = tfrecord_paths[args.start_from :]
 
-	parser.add_argument("--batch_size", type=int, default=8)
-	parser.add_argument("--max_num_objects", type=int, default=128)
-	parser.add_argument("--shuffle_seed", type=int, default=0)
-	parser.add_argument("--shuffle_buffer_size", type=int, default=0)
-	parser.add_argument("--dataset_num_shards", type=int, default=1)
-	parser.add_argument("--dataset_max_num_rg_points", type=int, default=30000)
-	parser.add_argument("--dataset_include_sdc_paths", action="store_true")
+	selected_paths = tfrecord_paths if args.max_tfrecords is None else tfrecord_paths[: int(args.max_tfrecords)]
+	output_dir = Path(args.output_dir)
 
-	parser.add_argument("--model_dt", type=float, default=0.2)
-	parser.add_argument("--world_dt_fallback", type=float, default=0.1)
-	parser.add_argument("--predict_horizon", type=int, default=25)
-	parser.add_argument("--max_range", type=float, default=100.0)
-	parser.add_argument("--ego_range", type=float, default=100.0)
-	parser.add_argument("--max_velocity", type=float, default=25.0)
-	parser.add_argument("--max_width", type=float, default=10.0)
-	parser.add_argument("--max_tl_points", type=int, default=16)
-	parser.add_argument("--num_map_type_classes", type=int, default=21)
-	parser.add_argument("--max_segments", type=int, default=128)
-	parser.add_argument("--max_points_per_segment", type=int, default=128)
-	parser.add_argument("--num_object_types", type=int, default=8)
-	parser.add_argument("--inst_dim", type=int, default=256)
-	return parser
+	written_paths: list[Path] = []
+	for tfrecord_path in selected_paths:
+		written_paths.append(
+			cache_single_tfrecord(
+				tfrecord_path=tfrecord_path,
+				output_dir=output_dir,
+				max_num_objects=int(args.max_num_objects),
+				world_idx=int(args.world_idx),
+				overwrite=bool(args.overwrite),
+			)
+		)
+	return written_paths
 
 
 def main() -> None:
-	parser = _build_arg_parser()
-	args = parser.parse_args()
-
-	file_indices = _parse_int_list(args.file_indices)
-	if args.tfrecord_paths:
-		tfrecord_paths = tuple(args.tfrecord_paths)
-	else:
-		if not args.tfrecord_dir:
-			raise ValueError("Provide --tfrecord_dir or --tfrecord_paths.")
-		tfrecord_paths = _resolve_tfrecord_paths(args.tfrecord_dir, file_indices)
-
-	preprocess_cfg = _build_preprocess_config(args)
-	output_dir = Path(args.output_dir)
-
-	for tfrecord_path in tfrecord_paths:
-		output_path = build_cache_for_tfrecord(
-			tfrecord_path=tfrecord_path,
-			output_dir=output_dir,
-			preprocess_cfg=preprocess_cfg,
-			target_timestep=int(args.target_timestep),
-			goal_step_override=args.goal_step,
-			seed=int(args.seed),
-			args=args,
-		)
-		print(f"saved: {output_path}")
+	args = _parse_args()
+	written_paths = run(args)
+	for path in written_paths:
+		print(path)
 
 
 if __name__ == "__main__":
 	main()
+	

@@ -44,6 +44,8 @@ _CACHE_FIELD_NAMES = (
 	"roadgraph_points_valid",
 	"roadgraph_points_dir_x",
 	"roadgraph_points_dir_y",
+	"inst_features",
+	"inst_valid"
 )
 
 
@@ -490,6 +492,8 @@ def _preprocess_single_cached_scenario(
 	origin_xy = ego_resampled_world[:, 0, :2]
 	anchor_yaw = ego_resampled_world[:, 0, 4]
 	goal_xy = _rotate_xy(np.asarray(goal_xy_world) - origin_xy, anchor_yaw) / float(cfg.ego_range)
+	subgoal_xy = np.where(goal_step_b > anchor_step_b + horizon_world_steps_b, ego_traj_norm[:, -1, :2], goal_xy)
+	subgoal_valid = np.ones_like(subgoal_xy[..., 0], dtype=bool)
 	remaining_timesteps = (goal_step_b - anchor_step_b) / 100.0
 
 	map_features, map_valid = _build_map_features(state, origin_xy, anchor_yaw, cfg)
@@ -506,6 +510,8 @@ def _preprocess_single_cached_scenario(
 		"ego_state": ego_state_norm.astype(np.float32),
 		"ego_trajectory": ego_traj_norm.astype(np.float32),
 		"goal_xy": goal_xy.astype(np.float32),
+		"subgoal_xy": subgoal_xy.astype(np.float32),
+		"subgoal_valid": subgoal_valid,
 		"remaining_timesteps": remaining_timesteps[:, None].astype(np.float32),
 		"other_states": other_norm.astype(np.float32),
 		"other_valid": other_valid.astype(bool),
@@ -538,9 +544,10 @@ def preprocess_cached_npz(
 	*,
 	scenario_indices: Sequence[int] | int | None = None,
 	seed: int | np.random.Generator | None = None,
-	anchor_step_override: Any = None,
-	goal_step_override: Any = None,
+	anchor_step_override: int = None,
+	goal_step_override: int = None,
 	goal_xy_override: Any = None,
+	include_inst_features: bool = False
 ) -> dict[str, dict[str, np.ndarray]]:
 	"""Preprocess a cached TFRecord shard into NumPy feature dictionaries.
 
@@ -566,6 +573,10 @@ def preprocess_cached_npz(
 			goal_step_override=_select_override_value(goal_step_override, len(selected_indices), row_idx),
 			goal_xy_override=_select_override_value(goal_xy_override, len(selected_indices), row_idx),
 		)
+		if include_inst_features:
+			assert anchor_step_override is not None, "anchor_step_override must be specified when include_inst_features is True"
+			features["inst_features"] = selected_payload["inst_features"][row_idx, anchor_step_override // 10][None, ...]
+			features["inst_valid"] = selected_payload["inst_valid"][row_idx, anchor_step_override // 10][None, ...]
 		feature_rows.append(features)
 		aux_rows.append(aux)
 
@@ -573,7 +584,9 @@ def preprocess_cached_npz(
 		if not rows:
 			return {}
 		keys = rows[0].keys()
-		return {key: np.concatenate([row[key] for row in rows], axis=0) for key in keys}
+		return {
+			key: np.concatenate([row[key] for row in rows], axis=0) for key in keys
+		}
 
 	metadata: dict[str, np.ndarray] = {
 		"cache_path": np.asarray(str(Path(cache_path)), dtype=np.str_),

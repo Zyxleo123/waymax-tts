@@ -85,9 +85,7 @@ def qa_to_text(qa_item: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str], list[str]]:
-	if batch.qa is None:
-		raise ValueError("batch.qa is required for QA training")
-
+	
 	feature_keys = list(batch.features.keys())
 	flattened_features: dict[str, list[torch.Tensor]] = {key: [] for key in feature_keys}
 	prompts: list[str] = []
@@ -100,7 +98,7 @@ def flatten_batch(batch) -> tuple[dict[str, torch.Tensor], list[str], list[str],
 			prompt, answer = qa_to_text(qa_item)
 			prompts.append(prompt)
 			answers.append(answer)
-			qa_keys.append(str(qa_item.get("key", "unknown")))
+			qa_keys.append(str(qa_item.get("keys", "unknown")))
 			for key in feature_keys:
 				flattened_features[key].append(batch.features[key][scenario_idx])
 
@@ -212,9 +210,6 @@ def build_vla_model(cfg: VLAPretrainConfig | Mapping[str, Any]) -> Any:
 			lora_dropout=config.get("lora_dropout", 0.05),
 			lora_target_modules=lora_target_modules,
 		)
-	elif model_type == "old_qwen":
-		from model.vla.old_qwen_vla import OldVecSceneQwenVLA
-		model = OldVecSceneQwenVLA(qwen_name=config["qwen_name"], num_scene_tokens=config["num_scene_tokens"])
 	else:
 		raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -282,7 +277,10 @@ def evaluate_answer_accuracy(
 	model.eval()
 	with torch.inference_mode():
 		for batch in loader:
-			features, prompts, answers, qa_keys = flatten_batch(batch)
+			features = batch.features
+			prompts = batch.prompts
+			answers = batch.answers
+			qa_keys = batch.keys
 			if not prompts:
 				continue
 

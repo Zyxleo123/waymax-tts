@@ -9,14 +9,15 @@ from flax import nnx, struct
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 from model.diffusion.diffusion import GaussianDiffusion, UNet1DConditioned
-from model.modules.scene_tokenizer import SceneTokenizer
-from model.modules.mlp import MLP
+from model.diffusion.modules.scene_tokenizer import SceneTokenizer
+from model.diffusion.modules.mlp import MLP
 
 
 @struct.dataclass
 class PolicyFeatures:
     ego_state: jnp.ndarray
     goal_xy: jnp.ndarray
+    subgoal_xy: jnp.ndarray
     remaining_timesteps: jnp.ndarray
     other_states: jnp.ndarray
     other_valid: jnp.ndarray
@@ -26,6 +27,7 @@ class PolicyFeatures:
     traffic_light_valid: jnp.ndarray
     inst_features: Optional[jnp.ndarray] = None
     inst_valid: Optional[jnp.ndarray] = None
+    subgoal_valid: Optional[jnp.ndarray] = None
     ego_trajectory: Optional[jnp.ndarray] = None
 
     @staticmethod
@@ -33,6 +35,8 @@ class PolicyFeatures:
         required = (
             "ego_state",
             "goal_xy",
+            "subgoal_xy",
+            "subgoal_valid",
             "remaining_timesteps",
             "other_states",
             "other_valid",
@@ -49,6 +53,8 @@ class PolicyFeatures:
         return PolicyFeatures(
             ego_state=features["ego_state"],
             goal_xy=features["goal_xy"],
+            subgoal_xy=features["subgoal_xy"],
+            subgoal_valid=features["subgoal_valid"],
             remaining_timesteps=features["remaining_timesteps"],
             other_states=features["other_states"],
             other_valid=features["other_valid"],
@@ -93,6 +99,7 @@ class DiffusionPolicy(nnx.Module):
             rngs=rngs,
         )
         self.instruction_encoder = MLP([inst_attr_dim, hidden_dim, hidden_dim, cond_dim], rngs=rngs)
+        self.subgoal_encoder = MLP([2, hidden_dim, hidden_dim, cond_dim], rngs=rngs)
 
         denoise_fn = UNet1DConditioned(
             in_ch=target_dim,
@@ -155,7 +162,11 @@ class DiffusionPolicy(nnx.Module):
         )
     
     def _instruction_condition_impl(self, features: PolicyFeatures) -> jnp.ndarray:
-        return self.instruction_encoder(features.inst_features, deterministic=True)
+        x_inst = self.instruction_encoder(features.inst_features, deterministic=True)
+        x_subgoal = self.subgoal_encoder(features.subgoal_xy, deterministic=True)
+        x_subgoal = x_subgoal * features.subgoal_valid[..., None]
+        return x_inst + x_subgoal
+
 
     def _sample_from_condition_impl(self, cond: jnp.ndarray, inst_cond: jnp.ndarray, inst_cond_mask: jnp.ndarray, rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = cond.shape[0]

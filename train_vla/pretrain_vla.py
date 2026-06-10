@@ -19,7 +19,7 @@ from train_vla.utils.utils import (
 	tokenize_text_batch,
 	move_features_to_device,
 )
-from data.qa_dataloader_v2 import build_qa_dataloader
+from data.cache_loader import build_dataloader
 from data.utils import split_cache_paths, resolve_cache_paths
 from datetime import datetime
 
@@ -42,11 +42,15 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
 	train_cache_paths, val_cache_paths = split_cache_paths(all_cache_paths, cfg.validation_fraction)
 
-	train_loader = build_qa_dataloader(
+	train_loader = build_dataloader(
 		cfg.cache_dir,
 		preprocess_cfg=cfg.preprocess_cfg,
+		annotation_dir=cfg.annotation_dir,
+		anchor_steps=(0, 10, 20, 30, 40, 50, 60, 70, 80),
+		language_label="qa",
+		backend="torch",
+		include_inst_features=False,
 		file_indices=None,  # use cache_paths instead
-		qa_dir=cfg.qa_dir,
 		batch_size=cfg.batch_size,
 		shuffle_seed=cfg.shuffle_seed,
 		num_workers=cfg.num_workers,
@@ -54,11 +58,15 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 		cache_paths=train_cache_paths,
 	)
 
-	val_loader = build_qa_dataloader(
+	val_loader = build_dataloader(
 		cfg.cache_dir,
 		preprocess_cfg=cfg.preprocess_cfg,
+		annotation_dir=cfg.annotation_dir,
+		anchor_steps=(0, 10, 20, 30, 40, 50, 60, 70, 80),
+		language_label="qa",
+		backend="torch",
+		include_inst_features=False,
 		file_indices=None,  # use cache_paths instead
-		qa_dir=cfg.qa_dir,
 		batch_size=cfg.batch_size,
 		shuffle_seed=cfg.shuffle_seed,
 		num_workers=cfg.num_workers,
@@ -128,9 +136,9 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 			epoch_total = max(0, cfg.max_steps - global_step)
 		pbar = tqdm(total=epoch_total, desc=f"epoch {epoch + 1}/{cfg.num_epochs}", unit="step")
 		for batch in train_loader:
-			features, prompts, answers, _ = flatten_batch(batch)  # _ for qa_keys (unused in training)
-			if not prompts:
-				continue
+			features = batch.features
+			prompts = batch.prompts
+			answers = batch.answers
 
 			prompt_ids, prompt_mask, answer_ids, answer_mask = tokenize_text_batch(
 				model.tokenizer,
@@ -188,7 +196,7 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 			if cfg.save_every > 0 and global_step > 0 and global_step % cfg.save_every == 0:
 				save_checkpoint(output_dir, global_step, model, optimizer, scheduler, cfg=cfg)
 
-			if (global_step + 1) % 1000 == 0:
+			if (global_step + 1) % 1000 == 0 or global_step == 0:
 
 				# Evaluate on validation set
 				val_metrics = {"accuracy": 0.0, "num_samples": 0.0}

@@ -71,6 +71,8 @@ class DiffusionPlanner(AbstractPlanner):
         if mask_goal:
             features["goal_xy"] = jnp.zeros_like(features["goal_xy"])
             features["remaining_timesteps"] = jnp.zeros_like(features["remaining_timesteps"])
+        features["subgoal_xy"] = jnp.zeros((self.num_worlds, 2), dtype=jnp.float32)
+        features["subgoal_valid"] = jnp.zeros((self.num_worlds,), dtype=jnp.float32)
         cond_bf, inst_cond_bf = self._compute_condition_jit(features)
 
         current_norm_bktd = self._sample_population_jit(

@@ -25,10 +25,10 @@ SCENE_TOKENIZER_OVERRIDE_FIELDS = (
 @dataclass(frozen=True)
 class VLAFinetuningConfig:
 	cache_dir: str
-	instruction_dir: str
+	annotation_dir: str
 	file_indices: list[int] | None
 	output_dir: str
-	wandb_project: str | None = "waymax_rs_qa"
+	wandb_project: str | None = "finetune_vla"
 	wandb_run_name: str | None = None
 	wandb_entity: str | None = None
 	wandb_mode: str = "online"
@@ -139,7 +139,7 @@ def parse_args() -> VLAFinetuningConfig:
 	parser = argparse.ArgumentParser(description="Finetune Scene VLA with LoRA.")
 	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/")
 	parser.add_argument("--tfrecord_dir", type=str, default=None, help="Deprecated alias for --cache_dir.")
-	parser.add_argument("--instruction_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/new_instructions/")
+	parser.add_argument("--annotation_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/annotations/")
 	parser.add_argument("--file_indices", type=str, nargs="*", default=None)
 	parser.add_argument("--output_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/vla/finetune_vla")
 	parser.add_argument("--wandb_project", type=str, default="finetune_vla")
@@ -181,12 +181,12 @@ def parse_args() -> VLAFinetuningConfig:
 	parser.add_argument("--max_answer_length", type=int, default=64)
 	parser.add_argument("--num_workers", type=int, default=0)
 	parser.add_argument("--no_pin_memory", action="store_true")
-	parser.add_argument("--add_eos", action="store_true", default=False)
+	parser.add_argument("--add_eos", action="store_true", default=True)
 	parser.add_argument("--pretrained_model_path", type=str, default=None)
 	parser.add_argument(
 		"--scene_tokenizer_ckpt",
 		type=str,
-		default=None,
+		required=True,
 		help="Checkpoint file or run/checkpoints directory used to initialize scene_tokenizer.",
 	)
 	parser.add_argument("--use_lora", action="store_true", default=True)
@@ -204,7 +204,7 @@ def parse_args() -> VLAFinetuningConfig:
 	args = parser.parse_args()
 	cfg = VLAFinetuningConfig(
 		cache_dir=args.cache_dir or args.tfrecord_dir,
-		instruction_dir=args.instruction_dir,
+		annotation_dir=args.annotation_dir,
 		file_indices=_parse_file_indices(args.file_indices),
 		output_dir=args.output_dir,
 		wandb_project=args.wandb_project,

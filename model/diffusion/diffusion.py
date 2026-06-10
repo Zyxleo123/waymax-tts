@@ -6,7 +6,7 @@ from typing import Sequence, Tuple
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from model.modules.attention import CrossAttention
+from model.diffusion.modules.attention import CrossAttention
 
 
 def sinusoidal_timestep_embedding(t: jnp.ndarray, dim: int, max_period: int = 10_000) -> jnp.ndarray:

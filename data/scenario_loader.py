@@ -9,6 +9,10 @@ from waymax import config as waymax_config
 from waymax import dataloader
 from waymax.dataloader import womd_factories
 
+"""
+This module provides functions for directly loading scenario data (sim_state) from TFRecord files.
+"""
+
 
 def load_scenario_state_fast(cfg: waymax_config.DatasetConfig, scenario_index: int):
     """Loads one scenario directly from TFRecord by skipping raw records first."""

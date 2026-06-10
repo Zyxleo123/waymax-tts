@@ -8,10 +8,10 @@ from typing import Any, Mapping, Optional
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
-from model.torch_modules.mlp import MLP
-from model.torch_modules.point_net import PointNet
-from model.torch_modules.attention import CrossAttentionLayers
-from model.torch_modules.scene_tokenizer import SceneTokenizer
+from model.vla.modules.mlp import MLP
+from model.vla.modules.point_net import PointNet
+from model.vla.modules.attention import CrossAttentionLayers
+from model.vla.modules.scene_tokenizer import SceneTokenizer
 
 
 class VecSceneGemmaVLA(nn.Module):

@@ -8,7 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import torch
 
-from data.inst_dataloader import INST_SUBGOAL_PROMPT
+# from data.inst_dataloader import INST_SUBGOAL_PROMPT
+from data.utils import VLA_PROMPT
 from data.postprocess import postprocess_predictions
 from data.preprocess import preprocess_simulator_state
 from data.types import PreprocessBatch, PreprocessConfig
@@ -36,8 +37,9 @@ class VLAPlanner(AbstractPlanner):
         *,
         torch_device: str | torch.device | None = None,
         jax_device: Any | None = None,
-        prompt_text: str = INST_SUBGOAL_PROMPT,
+        prompt_text: str = VLA_PROMPT,
         max_new_tokens: int = 64,
+        dummy_instruction: bool = False,
         **kwargs: Any,
     ) -> None:
         del kwargs
@@ -50,6 +52,7 @@ class VLAPlanner(AbstractPlanner):
         self.prompt_text = prompt_text
         self.max_new_tokens = int(max_new_tokens)
         self.inst_feature_dim = int(self.policy.instruction_encoder.input_dim)
+        self.dummy_instruction = dummy_instruction
 
         if torch_device is None:
             if torch.cuda.is_available():
@@ -100,15 +103,18 @@ class VLAPlanner(AbstractPlanner):
         )
         torch_features = self._move_features_to_torch(pre_batch.features, device=self.torch_device)
 
-        with torch.inference_mode():
-            amp_enabled = self.torch_device.type == "cuda"
-            with torch.autocast(device_type=self.torch_device.type, dtype=torch.bfloat16, enabled=amp_enabled):
-                instruction_texts, subgoal_texts = self.gemma_vla.generate_inst_subgoal_predictions(
-                    input_features=torch_features,
-                    prompt_ids=prompt_ids,
-                    prompt_mask=prompt_mask,
-                    max_new_tokens=self.max_new_tokens,
-                )
+        if self.dummy_instruction:
+            instruction_texts = ["Go to the left to turn left."] * len(prompt_ids)
+        else:
+            with torch.inference_mode():
+                amp_enabled = self.torch_device.type == "cuda"
+                with torch.autocast(device_type=self.torch_device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+                    instruction_texts, subgoal_texts = self.gemma_vla.generate_inst_subgoal_predictions(
+                        input_features=torch_features,
+                        prompt_ids=prompt_ids,
+                        prompt_mask=prompt_mask,
+                        max_new_tokens=self.max_new_tokens,
+                    )
 
         instruction_features, instruction_mask = self.encode_instructions(
             instruction_texts=instruction_texts
@@ -120,6 +126,8 @@ class VLAPlanner(AbstractPlanner):
         if mask_goal:
             features["goal_xy"] = jnp.zeros_like(features["goal_xy"])
             features["remaining_timesteps"] = jnp.zeros_like(features["remaining_timesteps"])
+        features["subgoal_xy"] = jnp.zeros((self.num_worlds, 2), dtype=jnp.float32)
+        features["subgoal_valid"] = jnp.zeros((self.num_worlds,), dtype=jnp.float32)
 
         with jax.default_device(self.jax_device):
             cond_bf, inst_cond_bf = self._compute_condition_jit(features)

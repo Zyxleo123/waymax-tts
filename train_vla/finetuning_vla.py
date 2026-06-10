@@ -8,7 +8,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
-from data.inst_dataloader_v2 import build_inst_dataloader
+from data.cache_loader import build_dataloader
 # from data.inst_dataloader import build_inst_dataloader
 from data.utils import resolve_cache_paths, split_cache_paths
 from train_vla.configs.vla_finetuning_config import VLAFinetuningConfig, parse_args
@@ -153,12 +153,18 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 
 	all_cache_paths = resolve_cache_paths(cfg.cache_dir, cfg.file_indices)
 	train_cache_paths, val_cache_paths = split_cache_paths(all_cache_paths, cfg.validation_fraction)
+	print(f"Number of training cache paths: {len(train_cache_paths)}")
+	print(f"Number of validation cache paths: {len(val_cache_paths)}")
 
-	train_loader = build_inst_dataloader(
+	train_loader = build_dataloader(
 		cfg.cache_dir,
 		preprocess_cfg=cfg.preprocess_cfg,
+		annotation_dir=cfg.annotation_dir,
+		anchor_steps=(0, 10, 20, 30, 40),
+		language_label="instruction",
+		backend="torch",
+		include_inst_features=False,
 		file_indices=None,
-		instruction_dir=cfg.instruction_dir,
 		batch_size=cfg.batch_size,
 		shuffle_seed=cfg.shuffle_seed,
 		num_workers=cfg.num_workers,
@@ -166,11 +172,15 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 		cache_paths=train_cache_paths,
 	)
 
-	val_loader = build_inst_dataloader(
+	val_loader = build_dataloader(
 		cfg.cache_dir,
 		preprocess_cfg=cfg.preprocess_cfg,
+		annotation_dir=cfg.annotation_dir,
+		anchor_steps=(0, 10, 20, 30, 40),
+		language_label="instruction",
+		backend="torch",
+		include_inst_features=False,
 		file_indices=None,
-		instruction_dir=cfg.instruction_dir,
 		batch_size=cfg.batch_size,
 		shuffle_seed=cfg.shuffle_seed,
 		num_workers=cfg.num_workers,
@@ -200,9 +210,9 @@ def run_training(cfg: VLAFinetuningConfig) -> None:
 			mode=cfg.wandb_mode,
 			config=dataclasses.asdict(cfg),
 		)
-		wandb_run.define_metric("train/step")
-		wandb_run.define_metric("train/*", step_metric="train/step")
-		wandb_run.define_metric("eval/*", step_metric="train/step")
+		# wandb_run.define_metric("train/step")
+		# wandb_run.define_metric("train/*", step_metric="train/step")
+		# wandb_run.define_metric("eval/*", step_metric="train/step")
 
 	trainable_params = [p for p in model.parameters() if p.requires_grad]
 	optimizer = torch.optim.AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)

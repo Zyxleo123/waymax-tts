@@ -8,7 +8,7 @@ from data.types import PreprocessConfig
 @dataclass(frozen=True)
 class VLAPretrainConfig:
 	cache_dir: str
-	qa_dir: str
+	annotation_dir: str
 	file_indices: list[int] | None
 	output_dir: str
 	wandb_project: str | None = "pretrain_vla"
@@ -72,7 +72,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser = argparse.ArgumentParser(description="Train SceneQwenVLA on QA data.")
 	parser.add_argument("--cache_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/sim_state_cache_npz/")
 	parser.add_argument("--tfrecord_dir", type=str, default=None, help="Deprecated alias for --cache_dir.")
-	parser.add_argument("--qa_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/new_instructions/")
+	parser.add_argument("--annotation_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/annotations/")
 	parser.add_argument("--file_indices", type=str, nargs="*", default=None)
 	parser.add_argument("--output_dir", type=str, default="/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_vla")
 	parser.add_argument("--wandb_project", type=str, default="pretrain_vla")
@@ -124,7 +124,7 @@ def parse_args() -> VLAPretrainConfig:
 
 	return VLAPretrainConfig(
 		cache_dir=args.cache_dir or args.tfrecord_dir,
-		qa_dir=args.qa_dir,
+		annotation_dir=args.annotation_dir,
 		file_indices=_parse_file_indices(args.file_indices),
 		output_dir=args.output_dir,
 		wandb_project=args.wandb_project,
