@@ -189,11 +189,11 @@ def load_offsets(index_path: Path) -> list[int]:
 
 
 def build_annotation_paths(cache_file: Path, annotation_dir: str, anchor_step: int) -> tuple[Path, Path]:
-	instruction_root = Path(instruction_dir)
+	annotation_root = Path(annotation_dir)
 	stem = cache_file.name.removesuffix(".sim_state_cache.npz")
 	return (
-		instruction_root / f"{stem}_t{anchor_step}.jsonl",
-		instruction_root / f"{stem}_t{anchor_step}.idx.json",
+		annotation_root / f"{stem}_t{anchor_step}.jsonl",
+		annotation_root / f"{stem}_t{anchor_step}.idx.json",
 	)
 
 def split_cache_paths(cache_paths: tuple[str, ...], val_fraction: float = 0.2) -> tuple[tuple[str, ...], tuple[str, ...]]:

@@ -89,6 +89,7 @@ def predict_planner_trajectories_with_periodic_replan(
     goal,
     planner: AbstractPlanner,
     replan_interval_steps: int,
+    instruction_interval_steps: int,
     start_timestep: int,
     rng_key: jax.Array,
 ):
@@ -98,17 +99,20 @@ def predict_planner_trajectories_with_periodic_replan(
     instructions = [dict() for _ in range(num_worlds)]
 
     replaced_state = sim_state  
-
+    prev_instruction_texts = None
     for step_offset in tqdm(range(start_timestep, episode_num_steps - 1, replan_interval_steps)):
         rng_key, key_plan = jax.random.split(rng_key)
+        instruction_texts = None if (step_offset - start_timestep) % instruction_interval_steps == 0 else prev_instruction_texts
         plan_result = planner.plan_trajectory(
             replaced_state,
             goal,
             rng=key_plan,
             timestep=step_offset,
-            mask_goal=cfg.mask_goal
+            mask_goal=cfg.mask_goal,
+            instruction_texts=instruction_texts,
         )
         instruction_t = getattr(plan_result, "instruction_texts", None)
+        prev_instruction_texts = instruction_t
         for b in range(num_worlds):
             instructions[b][f"t{step_offset}"] = instruction_t[b] if instruction_t is not None else ""
         plan_traj_bt5 = np.asarray(plan_result.trajectory_world_bt5, dtype=np.float32)

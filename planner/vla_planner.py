@@ -86,6 +86,7 @@ class VLAPlanner(AbstractPlanner):
         rng: jax.Array,
         timestep: int = 0,
         mask_goal: bool = False,
+        instruction_texts: list[str] | None = None,
         **kwargs: Any,
     ) -> VLAPlannerResult:
         rng, key_pre, key_sample = jax.random.split(rng, 3)
@@ -105,7 +106,7 @@ class VLAPlanner(AbstractPlanner):
 
         if self.dummy_instruction:
             instruction_texts = ["Go to the left to turn left."] * len(prompt_ids)
-        else:
+        elif instruction_texts is None:
             with torch.inference_mode():
                 amp_enabled = self.torch_device.type == "cuda"
                 with torch.autocast(device_type=self.torch_device.type, dtype=torch.bfloat16, enabled=amp_enabled):

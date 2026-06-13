@@ -93,6 +93,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             planner,
             start_timestep=int(args.start_timestep),
             replan_interval_steps=int(args.replan_interval_steps),
+            instruction_interval_steps=int(args.instruction_interval_steps),
             rng_key=rng_key,
         )
 

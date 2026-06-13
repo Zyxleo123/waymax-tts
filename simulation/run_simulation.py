@@ -57,6 +57,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num_worlds", type=int, default=10)
     parser.add_argument("--num_scenarios", type=int, default=1000)
     parser.add_argument("--replan_interval_steps", type=int, default=10)
+    parser.add_argument("--instruction_interval_steps", type=int, default=40)
     parser.add_argument("--visualize_mode", type=str, default="all", choices=["all", "success", "failure", "none"])
     parser.add_argument("--save_trajectory", action="store_true", default=False)
     parser.add_argument("--save_instruction", action="store_true", default=False)
