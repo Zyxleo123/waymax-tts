@@ -10,10 +10,15 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
+# VLA_PROMPT = """
+# Given a driving scenario, propose a driving instruction and a subgoal that helps the ego vehicle reach the goal.
+# Only output the instruction and subgoal without any additional text, in the format:
+# Instruction: instruction text here. Subgoal: x,y
+# """
 VLA_PROMPT = """
-Given a driving scenario, propose a driving instruction and a subgoal that helps the ego vehicle reach the goal.
-Only output the instruction and subgoal without any additional text, in the format:
-Instruction: instruction text here. Subgoal: x,y
+Given a driving scenario, propose a driving instruction that helps the ego vehicle reach the goal.
+Only output the instruction without any additional text.
+For example, \"Go straight while slowing down\"
 """
 
 def infer_subgoal_from_features(features: dict[str, torch.Tensor], ego_range=100.0) -> list[str]:
@@ -48,11 +53,11 @@ def build_question_bank(annotations: dict[str, Any]) -> list[dict[str, Any]]:
 	})
 	if is_yes and isinstance(traffic_lights, dict):
 		for direction, state in traffic_lights.items():
-			if "arrow" in state:
+			if direction == "straight":
 				is_yes = "stop" in state.lower()
 				qa_list.append({
 					"key": "traffic_light_state",
-					"question": f"Is the {direction}-turn signal stop? Answer with yes or no.",
+					"question": f"Is the straight through signal stop? Answer with yes or no.",
 					"answer": "yes" if is_yes else "no",
 					"label": is_yes,
 				})
@@ -60,7 +65,7 @@ def build_question_bank(annotations: dict[str, Any]) -> list[dict[str, Any]]:
 				is_yes = "stop" in state.lower()
 				qa_list.append({
 					"key": "traffic_light_state",
-					"question": f"Is the straight through signal stop? Answer with yes or no.",
+					"question": f"Is the {direction}-turn signal stop? Answer with yes or no.",
 					"answer": "yes" if is_yes else "no",
 					"label": is_yes,
 				})

@@ -21,6 +21,8 @@ class SceneTokenizer(nn.Module):
         hidden_dim: int = 1024,
         cond_dim: int = 256,
         num_tokens: int = 32,
+        num_heads: int = 4,
+        num_attn_layers: int = 4,
     ) -> None:
         super().__init__()
         self.token_dim = int(cond_dim)
@@ -33,7 +35,7 @@ class SceneTokenizer(nn.Module):
         self.tl_tokenizer = MLP([tl_attr_dim, hidden_dim, hidden_dim, cond_dim])
         self.map_tokenizer = PointNet(map_attr_dim, cond_dim)
         self.cond_tokens = nn.Parameter(torch.zeros(1, num_tokens, cond_dim))
-        self.attention = CrossAttentionLayers(cond_dim, cond_dim, num_heads=4, num_layers=4)
+        self.attention = CrossAttentionLayers(cond_dim, cond_dim, num_heads=num_heads, num_layers=num_attn_layers)
 
     def _tokenize_scene_features(
         self,

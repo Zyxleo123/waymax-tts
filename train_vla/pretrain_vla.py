@@ -187,6 +187,8 @@ def run_training(cfg: VLAPretrainConfig) -> None:
 						{
 							"train/step": global_step,
 							"train/loss": train_loss,
+							"train/subgoal_loss": float(outputs.get("subgoal_loss", torch.tensor(0.0)).detach().cpu()),
+							"train/language_loss": float(outputs.get("language_loss", torch.tensor(0.0)).detach().cpu()),
 							"train/lr": current_lr,
 							"train/batch_size": len(prompts),
 						},

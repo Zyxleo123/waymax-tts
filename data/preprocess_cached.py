@@ -537,6 +537,126 @@ def _preprocess_single_cached_scenario(
 
 	return features, aux
 
+def _preprocess_single_cached_scenario_with_history(
+	state: Mapping[str, np.ndarray],
+	rng: np.random.Generator,
+	cfg: PreprocessConfig,
+	anchor_step_override: Any = None,
+	goal_step_override: Any = None,
+	goal_xy_override: Any = None,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+	bsz = int(np.asarray(state["log_trajectory_x"]).shape[0])
+	ego_idx = extract_ego_index(state)
+	world_dt_b = compute_world_dt_seconds(state, cfg.world_dt_fallback)
+
+	total_horizon_s = float(cfg.predict_horizon * cfg.model_dt)
+	horizon_world_steps_b = np.ceil(total_horizon_s / np.maximum(world_dt_b, 1e-3)).astype(np.int32)
+
+	if anchor_step_override is not None:
+		anchor_step_b = np.full((bsz,), int(np.asarray(anchor_step_override)), dtype=np.int32)
+	else:
+		anchor_step_b, _ = sample_anchor_step(state, rng, horizon_world_steps_b)
+
+	x_bt = _gather_ego(np.asarray(state["log_trajectory_x"]), ego_idx)
+	y_bt = _gather_ego(np.asarray(state["log_trajectory_y"]), ego_idx)
+	vx_bt = _gather_ego(np.asarray(state["log_trajectory_vel_x"]), ego_idx)
+	vy_bt = _gather_ego(np.asarray(state["log_trajectory_vel_y"]), ego_idx)
+	yaw_bt = _gather_ego(np.asarray(state["log_trajectory_yaw"]), ego_idx)
+	ego_valid_bt = _gather_ego(np.asarray(state["log_trajectory_valid"]), ego_idx).astype(bool)
+	ts_bt = _gather_ego(np.asarray(state["log_trajectory_timestamp_micros"]), ego_idx).astype(np.float32) * 1e-6
+
+	if goal_step_override is not None:
+		goal_step_b = np.full((bsz,), int(np.asarray(goal_step_override)), dtype=np.int32)
+	else:
+		goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng)
+
+	if goal_xy_override is not None:
+		goal_xy_world = np.asarray(goal_xy_override)
+		if goal_xy_world.ndim == 1:
+			goal_xy_world = np.broadcast_to(goal_xy_world[None, :], (bsz, goal_xy_world.shape[0]))
+	else:
+		goal_x_b = np.take_along_axis(x_bt, goal_step_b[:, None], axis=1)[:, 0]
+		goal_y_b = np.take_along_axis(y_bt, goal_step_b[:, None], axis=1)[:, 0]
+		goal_xy_world = np.stack([goal_x_b, goal_y_b], axis=-1)
+
+	ego_world_btd_full = np.stack([x_bt, y_bt, vx_bt, vy_bt, yaw_bt], axis=-1)
+
+	anchor_ts_b = np.take_along_axis(ts_bt, anchor_step_b[:, None], axis=1)[:, 0]
+	src_t_b = ts_bt - anchor_ts_b[:, None]
+	model_t = np.arange(cfg.predict_horizon + 1, dtype=np.float32) * float(cfg.model_dt)
+	ego_resampled_world = resample_trajectory_timebase_numpy(ego_world_btd_full, src_t_b, model_t, yaw_index=4)
+
+	x_bn = _gather_time(np.asarray(state["log_trajectory_x"]), anchor_step_b)
+	y_bn = _gather_time(np.asarray(state["log_trajectory_y"]), anchor_step_b)
+	vx_bn = _gather_time(np.asarray(state["log_trajectory_vel_x"]), anchor_step_b)
+	vy_bn = _gather_time(np.asarray(state["log_trajectory_vel_y"]), anchor_step_b)
+	yaw_bn = _gather_time(np.asarray(state["log_trajectory_yaw"]), anchor_step_b)
+	length_bn = _gather_time(np.asarray(state["log_trajectory_length"]), anchor_step_b)
+	width_bn = _gather_time(np.asarray(state["log_trajectory_width"]), anchor_step_b)
+	valid_bn = _gather_time(np.asarray(state["log_trajectory_valid"]), anchor_step_b).astype(bool)
+	is_sdc_bn = np.asarray(state["object_metadata_is_sdc"]).astype(bool)
+	other_valid_bn = valid_bn & (~is_sdc_bn)
+	other_world_bnd = np.stack([x_bn, y_bn, vx_bn, vy_bn, yaw_bn, length_bn, width_bn], axis=-1)
+
+	ego_traj_norm, ego_state_norm, other_norm, other_valid = world_to_ego_normalized(
+		ego_world_btd=ego_resampled_world,
+		other_world_bnd=other_world_bnd,
+		other_valid_bn=other_valid_bn,
+		cfg=cfg,
+	)
+
+	object_types_bn = np.asarray(state["object_metadata_object_types"]).astype(np.int32)
+	type_oh = np.eye(int(cfg.num_object_types), dtype=np.float32)[np.clip(object_types_bn, 0, int(cfg.num_object_types) - 1)]
+	other_norm = np.concatenate([other_norm, type_oh], axis=-1)
+
+	origin_xy = ego_resampled_world[:, 0, :2]
+	anchor_yaw = ego_resampled_world[:, 0, 4]
+	goal_xy = _rotate_xy(np.asarray(goal_xy_world) - origin_xy, anchor_yaw) / float(cfg.ego_range)
+	subgoal_xy = np.where(goal_step_b > anchor_step_b + horizon_world_steps_b, ego_traj_norm[:, -1, :2], goal_xy)
+	subgoal_valid = np.ones_like(subgoal_xy[..., 0], dtype=bool)
+	remaining_timesteps = (goal_step_b - anchor_step_b) / 100.0
+
+	map_features, map_valid = _build_map_features(state, origin_xy, anchor_yaw, cfg)
+	tl_features, tl_valid = _build_tl_features(state, anchor_step_b, origin_xy, anchor_yaw, cfg)
+
+	max_world_steps = int(math.ceil((cfg.predict_horizon * cfg.model_dt) / cfg.world_dt_fallback)) + 2
+	world_step_idx = np.arange(max_world_steps, dtype=np.float32)[None, :]
+	world_steps_b = np.floor(total_horizon_s / np.maximum(world_dt_b, 1e-3)).astype(np.int32)
+	world_t = world_step_idx * world_dt_b[:, None]
+	world_valid = world_step_idx <= world_steps_b[:, None].astype(np.float32)
+	world_t = np.where(world_valid, world_t, total_horizon_s)
+
+	features = {
+		"ego_state": ego_state_norm.astype(np.float32),
+		"ego_trajectory": ego_traj_norm.astype(np.float32),
+		"goal_xy": goal_xy.astype(np.float32),
+		"subgoal_xy": subgoal_xy.astype(np.float32),
+		"subgoal_valid": subgoal_valid,
+		"remaining_timesteps": remaining_timesteps[:, None].astype(np.float32),
+		"other_states": other_norm.astype(np.float32),
+		"other_valid": other_valid.astype(bool),
+		"map_features": map_features.astype(np.float32),
+		"map_valid": map_valid.astype(bool),
+		"traffic_light_features": tl_features.astype(np.float32),
+		"traffic_light_valid": tl_valid.astype(bool),
+	}
+
+	anchor_world_state = ego_resampled_world[:, 0, :]
+	aux = {
+		"origin_xy": origin_xy.astype(np.float32),
+		"anchor_yaw": anchor_yaw.astype(np.float32),
+		"anchor_timestamp_micros": (anchor_ts_b * 1e6).astype(np.int32),
+		"model_t_seconds": np.broadcast_to(model_t[None, :], (bsz, model_t.shape[0])).astype(np.float32),
+		"world_t_seconds": world_t.astype(np.float32),
+		"world_t_valid": world_valid.astype(bool),
+		"world_dt_seconds": world_dt_b.astype(np.float32),
+		"ego_index": ego_idx.astype(np.int32),
+		"anchor_step": anchor_step_b.astype(np.int32),
+		"anchor_world_state": anchor_world_state.astype(np.float32),
+	}
+
+	return features, aux
+
 
 def preprocess_cached_npz(
 	cache_path: str | Path,

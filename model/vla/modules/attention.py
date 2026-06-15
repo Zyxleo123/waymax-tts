@@ -8,6 +8,68 @@ import torch.nn as nn
 from model.vla.modules.mlp import MLP
 
 
+class SelfAttention(nn.Module):
+    """Multi-head self-attention."""
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        num_heads: int = 8,
+    ) -> None:
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads})")
+
+        self.num_heads = int(num_heads)
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.qkv_proj = nn.Linear(dim, dim * 3)
+        self.out_proj = MLP([dim, hidden_dim, dim])
+
+    def forward(self, x_btc: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """Apply self-attention.
+
+        Args:
+            x_btc: [B, T, C] input features
+            mask: [B, T] boolean mask (True=keep)
+        """
+        b, t, c = x_btc.shape
+
+        qkv = self.qkv_proj(x_btc)
+        qkv = qkv.reshape(b, t, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        attn_scores = (q @ k.transpose(-2, -1)) * self.scale
+        if mask is not None:
+            mask = mask[:, None, None, :].expand(b, self.num_heads, t, t)
+            attn_scores = attn_scores.masked_fill(~mask, torch.tensor(-1e9, dtype=attn_scores.dtype, device=attn_scores.device))
+        attn_weights = torch.softmax(attn_scores, dim=-1)
+
+        out = attn_weights @ v
+
+        out = out.transpose(1, 2).reshape(b, t, c)
+        return self.out_proj(out)
+    
+
+class SelfAttentionLayers(nn.Module):
+    """Stack of self-attention layers with residual connections."""
+
+    def __init__(self, dim: int, hidden_dim: int = 512, num_heads: int = 8, num_layers: int = 4) -> None:
+        super().__init__()
+        self.attn_layers = nn.ModuleList([
+            SelfAttention(dim, hidden_dim, num_heads) for _ in range(num_layers)
+        ])
+
+    def forward(self, x_btc: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        h = x_btc
+        for layer in self.attn_layers:
+            attn_out = layer(h, mask)
+            h = h + attn_out
+        return h
+
+
 class CrossAttention(nn.Module):
     """Multi-head cross-attention: query from features, key/value from condition tokens."""
 
@@ -87,4 +149,4 @@ class CrossAttentionLayers(nn.Module):
         return h
 
 
-__all__ = ["CrossAttention", "CrossAttentionLayers"]
+__all__ = ["CrossAttention", "CrossAttentionLayers", "SelfAttention", "SelfAttentionLayers"]

@@ -87,7 +87,7 @@ def _path_to_string(path) -> str:
 
 def _is_trainable_path(path) -> bool:
 	path_str = _path_to_string(path)
-	return ("instruction_encoder" in path_str) or ("film_blocks" in path_str)
+	return ("instruction_encoder" in path_str) or ("film_blocks" in path_str) or ("subgoal_encoder" in path_str)
 
 
 def _zero_film_block_params(params_tree):

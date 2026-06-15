@@ -26,7 +26,7 @@ class VLAPretrainConfig:
 	max_steps: int | None = None
 	grad_accum_steps: int = 1
 	max_grad_norm: float = 1.0
-	shuffle_seed: int = 0
+	shuffle_seed: int = 42
 	shuffle_buffer_size: int = 1024
 	dataset_num_shards: int = 1
 	include_sdc_paths: bool = False
@@ -91,7 +91,7 @@ def parse_args() -> VLAPretrainConfig:
 	parser.add_argument("--max_steps", type=int, default=None)
 	parser.add_argument("--grad_accum_steps", type=int, default=1)
 	parser.add_argument("--max_grad_norm", type=float, default=1.0)
-	parser.add_argument("--shuffle_seed", type=int, default=0)
+	parser.add_argument("--shuffle_seed", type=int, default=42)
 	parser.add_argument("--shuffle_buffer_size", type=int, default=1024)
 	parser.add_argument("--dataset_num_shards", type=int, default=1)
 	parser.add_argument("--include_sdc_paths", action="store_true")

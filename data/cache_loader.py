@@ -89,6 +89,16 @@ class CacheDataset(IterableDataset[CacheBatch]):
                 feature_keys = sorted(preprocessed["features"].keys())
                 total_examples = int(preprocessed["features"][feature_keys[0]].shape[0])
                 scenario_indices = preprocessed["metadata"]["scenario_indices"]
+                
+                if self.cfg.shuffle_seed:
+                    rng = random.Random(int(self.cfg.shuffle_seed) + anchor_step)
+                    perm = list(range(total_examples))
+                    rng.shuffle(perm)
+                    scenario_indices = scenario_indices[perm]
+                    for key, value in preprocessed["features"].items():
+                        preprocessed["features"][key] = value[perm]
+                    for key, value in preprocessed["aux"].items():
+                        preprocessed["aux"][key] = value[perm]
                 for start_index in range(0, total_examples, self.cfg.batch_size):
                     end_index = min(start_index + self.cfg.batch_size, total_examples)
                     if self.cfg.drop_last and end_index == total_examples:
@@ -104,7 +114,7 @@ class CacheDataset(IterableDataset[CacheBatch]):
                     }
                     if self.cfg.language_label is not None:
                         prompts, answers, keys = [], [], []
-                        subgoal_texts = infer_subgoal_from_features(batch_features, ego_range=self.cfg.preprocess_cfg.ego_range)
+                        # subgoal_texts = infer_subgoal_from_features(batch_features, ego_range=self.cfg.preprocess_cfg.ego_range)
                         for i, scenario_index in enumerate(scenario_indices[start_index:end_index]):
                             annotation = self.load_annotation(cache_file, scenario_index, anchor_step)
                             if self.cfg.language_label == "qa":
@@ -115,7 +125,8 @@ class CacheDataset(IterableDataset[CacheBatch]):
                                     keys.append(item["key"])
                             elif self.cfg.language_label == "instruction":
                                 prompts.append(VLA_PROMPT)
-                                answer = f"Instruction: {annotation['instruction']} Subgoal: {subgoal_texts[i]} "
+                                # answer = f"Instruction: {annotation['instruction']} Subgoal: {subgoal_texts[i]} "
+                                answer = f"{annotation['instruction']}"
                                 answers.append(answer)
                         batch = CacheBatch(
                             features=batch_features,
@@ -140,7 +151,7 @@ def build_dataloader(
     *,
     file_indices: list[int] | None = None,
     batch_size: int = 1,
-    shuffle_seed: int = 0,
+    shuffle_seed: int = 42,
     num_workers: int = 0,
     pin_memory: bool = False,
     cache_paths: tuple[str, ...] | None = None,

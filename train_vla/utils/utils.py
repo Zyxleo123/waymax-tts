@@ -13,7 +13,8 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
-from model.vla.gemma_vla import VecSceneGemmaVLA
+# from model.vla.gemma_vla import VecSceneGemmaVLA
+from model.vla.gemma_vla_v2 import VecSceneGemmaVLA
 from model.vla.qwen_vla import VecSceneQwenVLA
 from train_vla.configs.vla_pretrain_config import VLAPretrainConfig, parse_args
 
@@ -314,7 +315,7 @@ def evaluate_answer_accuracy(
 				)
 
 			# Compare predictions with ground truth answers (normalized)
-			for pred, target, q_key in zip(predictions, answers, qa_keys):
+			for pred, target, q_key in zip(predictions['answer'], answers, qa_keys):
 				pred_norm = pred.lower().strip()
 				target_norm = target.lower().strip()
 				is_correct = pred_norm == target_norm
