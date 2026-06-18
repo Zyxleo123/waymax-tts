@@ -59,6 +59,18 @@ class TrainConfig:
     data_parallel: bool = False
     jax_compilation_cache_dir: str = "./.jax_compilation_cache"
 
+    # Optional: train on RL-policy rollouts instead of the human log. When
+    # ``rl_policy_path`` (or an RL data source) is set, scenarios are produced by
+    # rolling out the policy and splicing its trajectory into log_trajectory.
+    rl_policy_path: str | None = None
+    rl_tfrecord: str | None = None
+    rl_indices: str | None = None
+    rl_num_scenarios: int | None = None
+    rl_failure_dir: str | None = None
+    rl_max_episode_steps: int = 80
+    rl_action_space: str = "bicycle"
+    rl_deterministic: bool = True
+
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser()
 
@@ -113,6 +125,26 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--data_parallel", action="store_true")
     parser.add_argument("--jax_compilation_cache_dir", type=str, default="./.jax_compilation_cache")
+
+    # Optional RL-trajectory data source (distill an RL policy into the model).
+    parser.add_argument("--rl_policy_path", type=str, default=None,
+                        help="PPO .zip checkpoint. If set (or an --rl_* data source is "
+                             "given), train on RL rollouts instead of the human log.")
+    parser.add_argument("--rl_tfrecord", type=str, default=None,
+                        help="TFRecord for RL scenarios (defaults to --tfrecord_path).")
+    parser.add_argument("--rl_indices", type=str, default=None,
+                        help="Comma-separated scenario indices for --rl_tfrecord.")
+    parser.add_argument("--rl_num_scenarios", type=int, default=None,
+                        help="Use indices [0, N) from --rl_tfrecord.")
+    parser.add_argument("--rl_failure_dir", type=str, default=None,
+                        help="Directory of per-scenario failure JSONs for RL scenarios.")
+    parser.add_argument("--rl_max_episode_steps", type=int, default=80)
+    parser.add_argument("--rl_action_space", type=str, default="bicycle",
+                        choices=["bicycle", "delta"])
+    parser.add_argument("--rl_deterministic", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use deterministic policy actions during rollout "
+                             "(--no-rl_deterministic to sample).")
 
     return TrainConfig(**vars(parser.parse_args()))
 
