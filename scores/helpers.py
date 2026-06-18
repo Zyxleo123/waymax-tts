@@ -284,7 +284,6 @@ def get_closest_lane_point(
     # Ensure lane points are available (non-jitted wrapper handles Python objects)
     if scorer.lane_points is None:
         update_lane_points(scorer, sim_state, world_idx)
-
     object_xy = jnp.asarray(sim_state.log_trajectory.xy[world_idx], dtype=jnp.float32)
     object_yaw = jnp.asarray(sim_state.log_trajectory.yaw[world_idx], dtype=jnp.float32)
 

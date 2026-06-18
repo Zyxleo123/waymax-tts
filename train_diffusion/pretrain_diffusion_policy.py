@@ -264,6 +264,45 @@ def run_train_step(
     return train_step_fn(params_state, opt_state, ema_params, rng_key, global_step, sim_state)
 
 
+def _build_rl_scenario_generator(args, global_batch_size: int):
+    """Yields batched SimulatorStates from RL-policy rollouts (instead of logs).
+
+    Active when --rl_policy_path / --rl_tfrecord / --rl_failure_dir is set; the
+    diffusion model then learns the RL policy's behaviour. See
+    rl/rl_diffusion_source.py.
+    """
+    from rl.rl_diffusion_source import RLDiffusionSource
+    from rl.scenario_source import ScenarioSource
+
+    if args.rl_failure_dir:
+        source = ScenarioSource.from_failure_dir(
+            args.rl_failure_dir, max_num_objects=args.max_num_objects
+        )
+    else:
+        tfrecord = args.rl_tfrecord or args.tfrecord_path
+        if not tfrecord:
+            raise ValueError("RL source needs --rl_tfrecord/--tfrecord_path or --rl_failure_dir.")
+        if args.rl_indices:
+            indices = [int(x) for x in args.rl_indices.split(",") if x.strip() != ""]
+        elif args.rl_num_scenarios:
+            indices = list(range(int(args.rl_num_scenarios)))
+        else:
+            raise ValueError("Provide --rl_indices or --rl_num_scenarios for the RL source.")
+        source = ScenarioSource.from_tfrecord(
+            tfrecord, indices, max_num_objects=args.max_num_objects
+        )
+
+    rl_source = RLDiffusionSource(
+        source,
+        model_path=args.rl_policy_path,
+        deterministic=args.rl_deterministic,
+        max_episode_steps=args.rl_max_episode_steps,
+        action_space_type=args.rl_action_space,
+        seed=args.seed,
+    )
+    return rl_source.generator(global_batch_size)
+
+
 def main():
     args = parse_args()
     configure_jax_compilation_cache(args.jax_compilation_cache_dir)

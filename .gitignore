@@ -55,3 +55,4 @@ old/
 *.sqlite
 
 waymo-open-dataset/
+.DS_Store
