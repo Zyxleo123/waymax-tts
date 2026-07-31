@@ -46,6 +46,18 @@ from waymax import dataloader
 from vmax import simulator
 
 
+# WOMD 1.3.1 tf_example ships real SDC route paths (``path_samples/*``) baked in:
+# 45 candidate paths x 800 points each, with per-path ``on_route`` flags. These
+# match Waymax's ``WOD_1_3_1_TRAINING`` dataset config. We load them directly
+# (``include_sdc_paths=True``) instead of regenerating an approximate single-path
+# route at reset with V-Max's heuristic ``SDCPathWrapper`` -- the route feeds the
+# progression / off_route rewards, the path_target observation, and red-light /
+# route metrics, so using the dataset's curated paths removes a real train/eval
+# discrepancy vs the ScenarioMax-style data V-Max was tuned on.
+WOMD_NUM_SDC_PATHS = 45
+WOMD_NUM_POINTS_PER_SDC_PATH = 800
+
+
 # --------------------------------------------------------------------------- #
 # Failure-case set (RL half)
 # --------------------------------------------------------------------------- #
@@ -86,11 +98,13 @@ def parse_failure_specs(failure_dir: str, limit: int | None = None) -> list[tupl
 
 
 def _dataset_config(shard_path: str, max_num_objects: int) -> waymax_config.DatasetConfig:
-    """A WOMD DatasetConfig matching V-Max's training generator (no SDC paths)."""
+    """A WOMD DatasetConfig that keeps the dataset's real SDC route paths."""
     return waymax_config.DatasetConfig(
         path=shard_path,
         max_num_objects=max_num_objects,
-        include_sdc_paths=False,
+        include_sdc_paths=True,
+        num_paths=WOMD_NUM_SDC_PATHS,
+        num_points_per_path=WOMD_NUM_POINTS_PER_SDC_PATH,
         batch_dims=(),
         shuffle_seed=None,
         repeat=1,
@@ -104,6 +118,7 @@ def load_failure_scenarios(
     *,
     max_num_objects: int = 64,
     limit: int | None = None,
+    refit_sdc_log: bool = False,
     verbose: bool = True,
 ) -> tuple[Any, int]:
     """Load every failure scenario into a single host-resident ``[N, ...]`` state.
@@ -117,6 +132,12 @@ def load_failure_scenarios(
         failure_dir: Directory of per-scenario result JSONs (``success == false``).
         max_num_objects: Object cap; must match the training env's ``max_num_objects``.
         limit: Optional cap on the number of scenarios (for smoke tests).
+        refit_sdc_log: If True, rewrite each SDC's logged ``yaw``/velocity to be
+            kinematically consistent with the bicycle dynamics
+            (:func:`rl.vmax_rl.kinematic_refit.refit_state_sdc_log`). Defensive /
+            optional -- the decisive tracking fix is the per-env SDC action
+            selection in ``inference.expert_step``; this only shaves the residual
+            sub-metre integration error and well-conditions the low-speed inverse.
         verbose: Print loading progress.
 
     Returns:
@@ -152,6 +173,12 @@ def load_failure_scenarios(
     if not collected:
         raise RuntimeError("Loaded 0 valid failure scenarios (all lost their SDC?).")
     stacked = _stack_host_scenarios(collected)
+    if refit_sdc_log:
+        from rl.vmax_rl.kinematic_refit import refit_state_batch_host
+
+        stacked = jax.tree_util.tree_map(np.asarray, refit_state_batch_host(stacked))
+        if verbose:
+            print("[vmax_rl.data] Refit SDC log trajectories to be bicycle-consistent.")
     if verbose:
         print(f"[vmax_rl.data] Stacked {len(collected)} failure scenarios "
               f"(max_num_objects={max_num_objects}, dropped={dropped}).")
@@ -283,16 +310,23 @@ def make_expert_generator(
     num_episode_per_epoch: int,
     seed: int = 0,
 ) -> Iterator[Any]:
-    """Stream non-failure expert scenarios via V-Max's own dataloader.
+    """Stream non-failure expert scenarios with their real SDC route paths.
 
-    ``include_sdc_paths=False`` so the structure matches the failure generator;
-    the SDC route is generated on reset by ``SDCPathWrapper``.
+    ``include_sdc_paths=True`` (45 x 800, matching WOMD 1.3.1) so the structure
+    matches the failure generator and the env can consume the dataset's curated
+    route directly. We build the ``DatasetConfig`` here rather than calling
+    ``simulator.make_data_generator`` because the latter hardcodes V-Max's
+    ScenarioMax path dims (10 x 300), which would mismatch the WOMD path tensors.
     """
-    return simulator.make_data_generator(
+    config = waymax_config.DatasetConfig(
         path=expert_path,
         max_num_objects=max_num_objects,
-        include_sdc_paths=False,
+        include_sdc_paths=True,
+        num_paths=WOMD_NUM_SDC_PATHS,
+        num_points_per_path=WOMD_NUM_POINTS_PER_SDC_PATH,
         batch_dims=(num_envs, num_episode_per_epoch),
-        seed=seed,
+        shuffle_seed=seed,
         distributed=True,
+        data_format=waymax_config.DataFormat.TFRECORD,
     )
+    return dataloader.simulator_state_generator(config)

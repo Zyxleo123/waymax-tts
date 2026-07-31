@@ -1,0 +1,3 @@
+source_tree: /zfsauton2/home/mineuih/waymax_rs
+vendored_at: 2026-07-25T18:33:26Z
+failure_dataset: /zfsauton/scratch/mineuih/waymax_rs/exp/simulation_es_training_20260723_184324/20260723_184447

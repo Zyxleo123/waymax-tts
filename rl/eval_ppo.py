@@ -132,7 +132,7 @@ def main():
             **traj,
         }
         idx = spec.get("scenario_idx")
-        shard = Path(spec["tfrecord"]).stem if spec.get("tfrecord") else f"ep{ep:04d}"
+        shard = Path(spec["tfrecord"]).name if spec.get("tfrecord") else f"ep{ep:04d}"
         fname = f"{shard}.scenario_{idx:05d}.json" if isinstance(idx, int) else f"{shard}.json"
         with open(out_dir / fname, "w", encoding="utf-8") as f:
             json.dump(record, f)

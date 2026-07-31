@@ -15,6 +15,36 @@ from waymax.dataloader import womd_factories
 
 from . import viz as viz_module
 
+# ScenarioMax / V-Max tfexample layout (10 paths × 300 points).
+SCENARIOMAX_NUM_PATHS = 10
+SCENARIOMAX_NUM_POINTS_PER_PATH = 300
+
+
+def build_dataset_config(
+    path: str,
+    *,
+    batch_dims: tuple = (),
+    max_num_objects: int = 128,
+    scenariomax: bool = False,
+    shuffle_seed: int = 0,
+) -> waymax_config.DatasetConfig:
+    """Build a Waymax ``DatasetConfig`` for WOMD tfexample or ScenarioMax tfrecords."""
+    cfg = dataclasses.replace(
+        waymax_config.WOD_1_3_1_TRAINING,
+        path=path,
+        max_num_objects=int(max_num_objects),
+        batch_dims=batch_dims,
+        shuffle_seed=shuffle_seed,
+        include_sdc_paths=True,
+    )
+    if scenariomax:
+        cfg = dataclasses.replace(
+            cfg,
+            num_paths=SCENARIOMAX_NUM_PATHS,
+            num_points_per_path=SCENARIOMAX_NUM_POINTS_PER_PATH,
+        )
+    return cfg
+
 
 def _normalize_override_lists(
     num_requests: int,
@@ -128,28 +158,45 @@ def _get_reference_ego_heading_rad(state_batch, batch_idx: int) -> float:
     return float(np.asarray(state_batch.log_trajectory.yaw[batch_idx, sdc_idx, t_ref]))
 
 
-def _load_scenario_state_fast(cfg: waymax_config.DatasetConfig, scenario_index: int):
-    """Loads one scenario directly from TFRecord by skipping raw records first."""
-    raw_ds = tf.data.TFRecordDataset([cfg.path]).skip(int(scenario_index)).take(1)
-    iterator = iter(raw_ds)
-    try:
-        serialized = next(iterator)
-    except StopIteration as exc:
-        raise ValueError(
-            f"scenario_index {scenario_index} is out of range for tfrecord '{cfg.path}'."
-        ) from exc
+def _preprocess_single_record(cfg: waymax_config.DatasetConfig, raw: bytes):
+    """Preprocess one TFExample; never pre-batch the serialized bytes."""
+    import jax.numpy as jnp
+    import jax.tree_util as jtu
 
-    serialized = tf.expand_dims(serialized, axis=0)
-    processed = dataloader.preprocess_serialized_womd_data(serialized, cfg)
+    processed = dataloader.preprocess_serialized_womd_data(tf.constant(raw), cfg)
+    processed_np = jtu.tree_map(lambda t: t.numpy(), processed)
+    if cfg.batch_dims:
+        processed_np = jtu.tree_map(
+            lambda x: jnp.asarray(x)[(None,) * len(cfg.batch_dims)],
+            processed_np,
+        )
+    else:
+        processed_np = jtu.tree_map(jnp.asarray, processed_np)
     return womd_factories.simulator_state_from_womd_dict(
-        processed, include_sdc_paths=cfg.include_sdc_paths
+        processed_np, include_sdc_paths=cfg.include_sdc_paths
     )
+
+
+def _read_raw_record(cfg: waymax_config.DatasetConfig, scenario_index: int) -> bytes:
+    from rl.tfrecord_fast import read_tfrecord_bytes_or_scan
+
+    return read_tfrecord_bytes_or_scan(cfg.path, int(scenario_index))
+
+
+def _load_scenario_state_fast(cfg: waymax_config.DatasetConfig, scenario_index: int):
+    """Loads one scenario; uses byte-offset index when available."""
+    if int(scenario_index) < 0:
+        raise ValueError(f"scenario_index must be >= 0, got {scenario_index}.")
+    raw = _read_raw_record(cfg, scenario_index)
+    return _preprocess_single_record(cfg, raw)
 
 
 def _load_scenario_state_batch_fast(
     cfg: waymax_config.DatasetConfig, scenario_indices: Iterable[int]
 ):
-    """Loads a batch of scenarios from one TFRecord in a single dataset scan."""
+    """Loads a batch of scenarios from one TFRecord."""
+    from rl.tfrecord_fast import load_offset_index, offset_index_exists, read_tfrecord_bytes
+
     indices = [int(i) for i in scenario_indices]
     if not indices:
         raise ValueError("scenario_indices must be non-empty.")
@@ -157,30 +204,51 @@ def _load_scenario_state_batch_fast(
         raise ValueError(f"scenario_indices must be >= 0, got {indices}.")
 
     unique_indices = sorted(set(indices))
-    needed = set(unique_indices)
-    selected: list[tf.Tensor] = []
-    selected_indices: list[int] = []
+    single_cfg = dataclasses.replace(cfg, batch_dims=(1,))
+    if offset_index_exists(cfg.path):
+        offsets = load_offset_index(cfg.path)
+        max_idx = unique_indices[-1]
+        if max_idx >= len(offsets):
+            raise ValueError(
+                f"scenario_index {max_idx} out of range for tfrecord '{cfg.path}' "
+                f"(index has {len(offsets)} records)."
+            )
+        raw_records = [read_tfrecord_bytes(cfg.path, i, offset_index=None) for i in unique_indices]
+    else:
+        needed = set(unique_indices)
+        raw_records = []
+        selected_indices: list[int] = []
+        slow_threshold = 1000
+        if unique_indices[-1] >= slow_threshold:
+            raise RuntimeError(
+                f"Cannot batch-load scenario indices up to {unique_indices[-1]} without "
+                f"a byte offset index on {cfg.path}.\n"
+                f"Build it with: python -m rl.tfrecord_fast build {cfg.path}"
+            )
+        for raw_idx, serialized in enumerate(tf.data.TFRecordDataset([cfg.path])):
+            if raw_idx in needed:
+                raw_records.append(serialized.numpy())
+                selected_indices.append(raw_idx)
+                if len(raw_records) == len(needed):
+                    break
+        if len(raw_records) != len(unique_indices):
+            missing = sorted(needed.difference(selected_indices))
+            raise ValueError(
+                f"scenario_index values {missing} are out of range for tfrecord '{cfg.path}'."
+            )
 
-    raw_ds = tf.data.TFRecordDataset([cfg.path])
-    for raw_idx, serialized in enumerate(raw_ds):
-        if raw_idx in needed:
-            selected.append(serialized)
-            selected_indices.append(raw_idx)
-            if len(selected) == len(needed):
-                break
+    import jax.numpy as jnp
+    import jax.tree_util as jtu
 
-    missing = sorted(needed.difference(selected_indices))
-    if missing:
-        raise ValueError(
-            f"scenario_index values {missing} are out of range for tfrecord '{cfg.path}'."
-        )
-
-    serialized_batch = tf.stack(selected, axis=0)
-    processed = dataloader.preprocess_serialized_womd_data(serialized_batch, cfg)
-    state_batch = womd_factories.simulator_state_from_womd_dict(
-        processed, include_sdc_paths=cfg.include_sdc_paths
-    )
-    scenario_to_batch_idx = {scenario_idx: i for i, scenario_idx in enumerate(selected_indices)}
+    states = [_preprocess_single_record(single_cfg, raw) for raw in raw_records]
+    if len(states) == 1:
+        state_batch = states[0]
+    else:
+        # Each state already carries the single_cfg batch dim (shape (1, ...));
+        # squeeze it before stacking so the result is (N, ...), not (N, 1, ...).
+        states = [jtu.tree_map(lambda x: x[0], s) for s in states]
+        state_batch = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *states)
+    scenario_to_batch_idx = {scenario_idx: i for i, scenario_idx in enumerate(unique_indices)}
     return state_batch, scenario_to_batch_idx
 
 
@@ -201,6 +269,7 @@ def render_video_from_tfrecord(
     back_x: float = 30.0,
     front_y: float = 30.0,
     back_y: float = 30.0,
+    scenariomax: bool = False,
 ) -> Path:
     """Render a WOMD scenario video using the local viz/ renderer."""
     if int(scenario_index) < 0:
@@ -209,12 +278,11 @@ def render_video_from_tfrecord(
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ds_cfg = dataclasses.replace(
-        waymax_config.WOD_1_3_1_TRAINING,
-        path=tfrecord,
-        max_num_objects=int(max_num_objects),
+    ds_cfg = build_dataset_config(
+        tfrecord,
         batch_dims=(1,),
-        shuffle_seed=0,
+        max_num_objects=int(max_num_objects),
+        scenariomax=scenariomax,
     )
     state = _load_scenario_state_fast(ds_cfg, int(scenario_index))
     num_frames = min(int(num_frames), int(state.log_trajectory.x.shape[-1]))
@@ -266,6 +334,7 @@ def render_videos_batched(
     back_y: float = 30.0,
     align_ego_heading_up: bool = False,
     goal_xy: np.ndarray | None = None,
+    scenariomax: bool = False,
 ) -> list[Path]:
     """
     Render multiple videos for arbitrary (tfrecord, scenario_index) pairs efficiently.
@@ -275,7 +344,7 @@ def render_videos_batched(
     """
     if not tfrecord_scenarios:
         return []
-    if target_vehicles[0] is None:
+    if target_vehicles is not None and target_vehicles[0] is None:
         target_vehicles = None
 
     overrides = _normalize_override_lists(
@@ -326,12 +395,11 @@ def render_videos_batched(
 
     for tfrecord, requests in grouped.items():
         unique_scenarios = sorted({scenario_index for _, scenario_index in requests})
-        ds_cfg = dataclasses.replace(
-            waymax_config.WOD_1_3_1_TRAINING,
-            path=tfrecord,
-            max_num_objects=int(max_num_objects),
+        ds_cfg = build_dataset_config(
+            tfrecord,
             batch_dims=(len(unique_scenarios),),
-            shuffle_seed=0,
+            max_num_objects=int(max_num_objects),
+            scenariomax=scenariomax,
         )
         state_batch, scenario_to_batch_idx = _load_scenario_state_batch_fast(
             ds_cfg, unique_scenarios

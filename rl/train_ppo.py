@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from rl.encoders import add_encoder_args, build_policy_kwargs
 from rl.scenario_source import ScenarioSource
 from rl.waymax_env import RewardConfig, WaymaxGymEnv
 
@@ -129,6 +130,7 @@ def main():
     model = PPO(
         "MlpPolicy",
         vec_env,
+        policy_kwargs=build_policy_kwargs(args),
         n_steps=n_steps,
         batch_size=args.batch_size,
         learning_rate=args.lr,
@@ -231,6 +233,9 @@ def _parse_args():
     p.add_argument("--total-timesteps", type=int, default=1_000_000)
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--seed", type=int, default=0)
+
+    # Policy architecture (feature extractor + head sizes).
+    add_encoder_args(p)
 
     # Logging.
     p.add_argument("--save-dir", type=str, default="runs/ppo_waymax")

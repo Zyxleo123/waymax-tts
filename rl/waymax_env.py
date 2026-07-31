@@ -38,16 +38,14 @@ from waymax import datatypes
 from waymax import dynamics as waymax_dynamics
 from waymax import env as waymax_env
 
+from rl import obs_layout
+from rl.obs_layout import DEFAULT_OBS_BLOCKS, obs_layout_size
 from rl.scenario_source import ScenarioSource
 
-# Observation layout constants.
-_K_AGENTS = 8          # nearest other agents included in the observation
-_K_ROADGRAPH = 20      # nearest roadgraph points included in the observation
-_POS_NORM = 50.0       # meters
-_VEL_NORM = 20.0       # m/s
-_SPEED_NORM = 20.0     # m/s
-_DIST_NORM = 50.0      # meters
-_RG_RANGE = 50.0       # meters; roadgraph points beyond this are ignored
+# The observation's block structure (entity counts, history depth, feature dims,
+# trailing valid bit) lives in ``rl.obs_layout``, aligned to V-Max's
+# ``repro_sac_v2`` observation_config, and is shared with the torch encoders in
+# ``rl.encoders``. See that module for the reference config.
 _OBS_CLIP = 10.0
 
 # Default physical limits for the "delta" (next-position) action space, applied
@@ -58,6 +56,28 @@ _DELTA_MAX_DY = 6.0     # meters (left/right in ego frame)
 _DELTA_MAX_DYAW = float(np.pi)  # radians
 
 _VALID_ACTION_SPACES = ("bicycle", "delta")
+
+# Preset for learnable policy rollouts (SAC / PPO on failure cases).
+# Mirrors ``rl/vmax_rl/env_utils.POLICY_FRIENDLY_*``.
+POLICY_FRIENDLY_COLLISION = -0.25
+POLICY_FRIENDLY_OFFROAD = -0.25
+
+
+def attach_idm_sim_agents(env: waymax_env.PlanningAgentEnvironment, *, desired_vel: float = 30.0):
+    """Make all non-SDC objects reactive (IDM) instead of log-replayed.
+
+    Must be called before the first ``reset`` so per-episode sim-agent actor
+    state is initialised correctly.
+    """
+    from waymax.agents import IDMRoutePolicy
+
+    idm = IDMRoutePolicy(
+        is_controlled_func=lambda state: ~state.object_metadata.is_sdc,
+        desired_vel=desired_vel,
+    )
+    env._sim_agent_actors = (idm,)
+    env._sim_agent_params = (None,)
+    return env
 
 
 @dataclasses.dataclass
@@ -81,14 +101,41 @@ class RewardConfig:
     # reduction to the final goal point (original behavior).
     route_reward: bool = False
     lateral_penalty: float = 0.5  # reward per meter of lateral deviation from route
+    # V-Max scores route adherence with a *bounded indicator* (`off_route: -0.2`
+    # charged once per step past a threshold), not an unbounded per-metre cost.
+    # The per-metre form lets the penalty dominate the whole return when the
+    # policy is far from the route -- which is exactly what happened on the first
+    # SB3 run (return was ~= the integrated lateral penalty). Set
+    # ``off_route_threshold_m`` to switch to the V-Max form.
+    off_route_threshold_m: float | None = None
+    off_route_penalty: float = -0.2
 
 
 def observation_dim() -> int:
-    return 2 + 5 + _K_AGENTS * 7 + _K_ROADGRAPH * 2
+    return obs_layout_size(DEFAULT_OBS_BLOCKS)
 
 
 def _wrap_to_pi(angle: jax.Array) -> jax.Array:
     return (angle + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
+
+
+def _top_k_padded(score: jax.Array, k: int) -> tuple[jax.Array, jax.Array]:
+    """``jax.lax.top_k`` that tolerates fewer candidates than ``k``.
+
+    ``lax.top_k`` requires ``k <= score.shape[-1]``, but a scene can legitimately
+    hold fewer entities than an observation block has slots (a scene with 3
+    traffic lights, or ``max_num_objects`` below the agents block size). Pad the
+    score with a ``-inf`` sentinel so the block always yields ``k`` rows; the
+    padded rows score below the ``-1e8`` selection cutoff, so callers mark them
+    invalid and zero them out. Returned indices are clamped into range so the
+    subsequent gathers stay valid.
+    """
+    n = score.shape[-1]
+    if n >= k:
+        return jax.lax.top_k(score, k)
+    padded = jnp.concatenate([score, jnp.full((k - n,), -jnp.inf, score.dtype)])
+    values, indices = jax.lax.top_k(padded, k)
+    return values, jnp.minimum(indices, n - 1)
 
 
 class WaymaxGymEnv(gym.Env):
@@ -108,6 +155,8 @@ class WaymaxGymEnv(gym.Env):
         delta_max_dx: float = _DELTA_MAX_DX,
         delta_max_dy: float = _DELTA_MAX_DY,
         delta_max_dyaw: float = _DELTA_MAX_DYAW,
+        reactive_agents: bool = False,
+        idm_desired_vel: float = 30.0,
     ):
         super().__init__()
         if action_space_type not in _VALID_ACTION_SPACES:
@@ -152,6 +201,8 @@ class WaymaxGymEnv(gym.Env):
             dynamics_model=self._dynamics,
             config=env_cfg,
         )
+        if reactive_agents:
+            attach_idm_sim_agents(self._env, desired_vel=idm_desired_vel)
 
         # JIT the hot paths once; shapes are constant across scenarios.
         env_obj = self._env
@@ -206,7 +257,9 @@ class WaymaxGymEnv(gym.Env):
 
         obs, goal_dist, ego_xy = self._jit_obs(self._state, self._goal_xy)
         self._prev_dist = float(goal_dist)
-        self._prev_s, _ = _project_to_route(np.asarray(ego_xy), self._route_xy, self._route_s)
+        self._prev_s, init_lateral = _project_to_route(
+            np.asarray(ego_xy), self._route_xy, self._route_s
+        )
         self._step_count = 0
 
         num_timesteps = int(np.asarray(scen_np.log_trajectory.x).shape[-1])
@@ -215,6 +268,7 @@ class WaymaxGymEnv(gym.Env):
 
         info = {
             "goal_dist": self._prev_dist,
+            "lateral_deviation_m": float(init_lateral),
             "scenario": dataclasses.asdict(self._source.spec(self._seq_cursor - 1))
             if self._sequential
             else {},
@@ -244,13 +298,17 @@ class WaymaxGymEnv(gym.Env):
         reached = goal_dist <= self._reward.goal_threshold_m
 
         rc = self._reward
+        s, lateral = _project_to_route(
+            np.asarray(ego_xy), self._route_xy, self._route_s
+        )
         if rc.route_reward:
-            # Progress = advancement along the expert path; penalize deviation.
-            s, lateral = _project_to_route(
-                np.asarray(ego_xy), self._route_xy, self._route_s
-            )
             reward = rc.progress * (s - self._prev_s)
-            reward -= rc.lateral_penalty * lateral
+            if rc.off_route_threshold_m is None:
+                reward -= rc.lateral_penalty * lateral
+            else:
+                # V-Max form: a bounded per-step indicator, so the route term can
+                # never swamp progression the way the per-metre cost does.
+                reward += rc.off_route_penalty * float(lateral > rc.off_route_threshold_m)
             self._prev_s = s
         else:
             reward = rc.progress * (self._prev_dist - goal_dist)
@@ -277,6 +335,7 @@ class WaymaxGymEnv(gym.Env):
             "collision": collision,
             "offroad": off,
             "reached": reached,
+            "lateral_deviation_m": float(lateral),
             "is_success": bool(reached),
         }
         return np.asarray(obs, dtype=np.float32), float(reward), terminated, truncated, info
@@ -419,6 +478,11 @@ def _project_to_route(
 def _compute_goal_xy(scen_np: Any) -> np.ndarray:
     """Goal = ego's last valid logged (x, y) position (matches goal_reaching.py)."""
     is_sdc = np.asarray(scen_np.object_metadata.is_sdc).astype(bool)
+    if is_sdc.ndim != 1:
+        raise ValueError(
+            f"Expected unbatched scenario (is_sdc shape {is_sdc.shape}); "
+            "got a batched state — slice batch dim before calling _compute_goal_xy."
+        )
     ego = int(np.argmax(is_sdc))
     x = np.asarray(scen_np.log_trajectory.x)[ego]
     y = np.asarray(scen_np.log_trajectory.y)[ego]
@@ -428,25 +492,45 @@ def _compute_goal_xy(scen_np: Any) -> np.ndarray:
     return np.array([x[t], y[t]], dtype=np.float32)
 
 
+def _one_hot_valid(idx: jax.Array, num_classes: int) -> jax.Array:
+    """One-hot over ``num_classes``, clamping out-of-range ids into range."""
+    return jax.nn.one_hot(jnp.clip(idx, 0, num_classes - 1), num_classes)
+
+
+def _past_window(traj: Any, timestep: jax.Array, num_steps: int):
+    """Slice ``num_steps`` trajectory frames ending at (and including) ``timestep``.
+
+    ``jax.lax.dynamic_slice`` clamps the start index into range, so the early
+    part of an episode simply repeats the earliest available frames rather than
+    reading out of bounds.
+    """
+    start = timestep - (num_steps - 1)
+    return datatypes.dynamic_slice(traj, start, num_steps, axis=-1)
+
+
 def _compute_observation(state: Any, goal_xy: jax.Array):
-    """Builds a compact SDC-centric observation vector (JIT-compiled).
+    """Builds the V-Max-aligned, SDC-centric observation vector (JIT-compiled).
+
+    Blocks, in order, matching ``rl.obs_layout.DEFAULT_OBS_BLOCKS``: ``sdc``,
+    ``agents``, ``roadgraph``, ``traffic_lights``, ``path_target``, ``goal``.
+    Feature sets and sizes mirror V-Max's ``repro_sac_v2`` observation_config
+    (see ``rl/obs_layout.py``), computed straight from raw WOMD.
+
+    Everything is expressed in the ego frame at the current timestep. Rows for
+    padded/invalid entities are zeroed and carry a 0 validity bit, so the
+    encoder can mask them.
 
     Returns (obs[obs_dim] float32, goal_distance scalar float32,
     ego_xy[2] float32 world position).
     """
     is_sdc = state.object_metadata.is_sdc  # [N]
     ego_idx = jnp.argmax(is_sdc.astype(jnp.int32))
+    P = obs_layout.OBS_PAST_NUM_STEPS
 
+    # --- ego pose at the current step defines the frame ---------------------- #
     cur = datatypes.dynamic_slice(state.sim_trajectory, state.timestep, 1, axis=-1)
-    x = cur.x[:, 0]
-    y = cur.y[:, 0]
-    yaw = cur.yaw[:, 0]
-    vx = cur.vel_x[:, 0]
-    vy = cur.vel_y[:, 0]
-    valid = cur.valid[:, 0]
-
-    ex, ey, eyaw = x[ego_idx], y[ego_idx], yaw[ego_idx]
-    evx, evy = vx[ego_idx], vy[ego_idx]
+    ex, ey = cur.x[ego_idx, 0], cur.y[ego_idx, 0]
+    eyaw = cur.yaw[ego_idx, 0]
     ch, sh = jnp.cos(eyaw), jnp.sin(eyaw)
 
     def to_ego(px, py):
@@ -456,55 +540,165 @@ def _compute_observation(state: Any, goal_xy: jax.Array):
     def rot(px, py):
         return ch * px + sh * py, -sh * px + ch * py
 
-    # Ego block.
-    ego_speed = jnp.sqrt(evx ** 2 + evy ** 2)
-    num_t = jnp.asarray(state.log_trajectory.num_timesteps, dtype=jnp.float32)
-    t_frac = state.timestep.astype(jnp.float32) / jnp.maximum(num_t, 1.0)
-    ego_block = jnp.stack([ego_speed / _SPEED_NORM, t_frac])
+    def norm_xy(v):
+        return jnp.clip(v, -obs_layout.MAX_METERS, obs_layout.MAX_METERS) / obs_layout.MAX_METERS
 
-    # Goal block.
-    gx, gy = to_ego(goal_xy[0], goal_xy[1])
-    goal_dist = jnp.sqrt(gx ** 2 + gy ** 2)
-    gth = jnp.arctan2(gy, gx)
-    goal_block = jnp.stack(
-        [gx / _POS_NORM, gy / _POS_NORM, goal_dist / _DIST_NORM, jnp.cos(gth), jnp.sin(gth)]
+    # --- object history: [N, P] ------------------------------------------- #
+    hist = _past_window(state.sim_trajectory, state.timestep, P)
+    hx, hy = to_ego(hist.x, hist.y)
+    hvx, hvy = rot(hist.vel_x, hist.vel_y)
+    hyaw = _wrap_to_pi(hist.yaw - eyaw)
+    hvalid = hist.valid
+
+    def object_rows(sel_idx: jax.Array, sel_ok: jax.Array) -> jax.Array:
+        """Assemble [K, P, 8] rows (7 features + valid) for the selected objects."""
+        valid = hvalid[sel_idx] & sel_ok[:, None]
+        feats = jnp.stack(
+            [
+                norm_xy(hx[sel_idx]),
+                norm_xy(hy[sel_idx]),
+                jnp.clip(hvx[sel_idx], -obs_layout.MAX_SPEED, obs_layout.MAX_SPEED) / obs_layout.MAX_SPEED,
+                jnp.clip(hvy[sel_idx], -obs_layout.MAX_SPEED, obs_layout.MAX_SPEED) / obs_layout.MAX_SPEED,
+                hyaw[sel_idx],
+                hist.length[sel_idx] / obs_layout.MAX_METERS,
+                hist.width[sel_idx] / obs_layout.MAX_METERS,
+                valid.astype(jnp.float32),
+            ],
+            axis=-1,
+        )
+        return jnp.where(valid[..., None], feats, 0.0)
+
+    # sdc block: the ego's own history (always valid).
+    sdc_block = object_rows(ego_idx[None], jnp.ones((1,), dtype=bool)).reshape(-1)
+
+    # agents block: K nearest valid non-ego objects, ranked at the current step.
+    ox_now, oy_now = hx[:, -1], hy[:, -1]
+    other_valid = hvalid[:, -1] & (~is_sdc)
+    dist_now = jnp.sqrt(ox_now ** 2 + oy_now ** 2)
+    score = jnp.where(other_valid, -dist_now, -jnp.inf)
+    top_vals, top_idx = _top_k_padded(score, obs_layout.NUM_CLOSEST_OBJECTS)
+    agents_block = object_rows(top_idx, jnp.isfinite(top_vals)).reshape(-1)
+
+    # --- roadgraph block --------------------------------------------------- #
+    # Road edges only (what the offroad metric is computed against), inside a
+    # front-biased ego box, decimated by `interval`, then top-k nearest.
+    rg = state.roadgraph_points
+    rx, ry = to_ego(rg.x, rg.y)
+    rdx, rdy = rot(rg.dir_x, rg.dir_y)
+
+    is_edge = jnp.zeros_like(rg.valid)
+    for t in obs_layout.ROADGRAPH_ELEMENT_TYPES:
+        is_edge = is_edge | (rg.types == t)
+    in_box = (
+        (rx <= obs_layout.METERS_BOX_FRONT)
+        & (rx >= -obs_layout.METERS_BOX_BACK)
+        & (ry <= obs_layout.METERS_BOX_LEFT)
+        & (ry >= -obs_layout.METERS_BOX_RIGHT)
     )
+    keep_stride = (jnp.arange(rg.x.shape[-1]) % obs_layout.ROADGRAPH_INTERVAL) == 0
+    rvalid = rg.valid & is_edge & in_box & keep_stride
 
-    # Other agents block (K nearest valid non-ego objects).
-    ox, oy = to_ego(x, y)
-    ovx, ovy = rot(vx, vy)
-    oyaw = _wrap_to_pi(yaw - eyaw)
-    other_valid = valid & (~is_sdc)
-    dist = jnp.sqrt(ox ** 2 + oy ** 2)
-    score = jnp.where(other_valid, -dist, -1e9)
-    top_vals, top_idx = jax.lax.top_k(score, _K_AGENTS)
-    sel = top_vals > -1e8
-    agent_feat = jnp.stack(
+    rdist = jnp.sqrt(rx ** 2 + ry ** 2)
+    rscore = jnp.where(rvalid, -rdist, -jnp.inf)
+    r_top_vals, r_top_idx = _top_k_padded(rscore, obs_layout.ROADGRAPH_TOP_K)
+    rsel = jnp.isfinite(r_top_vals)
+    rg_rows = jnp.stack(
         [
-            ox[top_idx] / _POS_NORM,
-            oy[top_idx] / _POS_NORM,
-            ovx[top_idx] / _VEL_NORM,
-            ovy[top_idx] / _VEL_NORM,
-            jnp.cos(oyaw[top_idx]),
-            jnp.sin(oyaw[top_idx]),
-            sel.astype(jnp.float32),
+            norm_xy(rx[r_top_idx]),
+            norm_xy(ry[r_top_idx]),
+            rdx[r_top_idx],
+            rdy[r_top_idx],
+            rsel.astype(jnp.float32),
         ],
         axis=-1,
     )
-    agent_feat = jnp.where(sel[:, None], agent_feat, 0.0).reshape(-1)
+    roadgraph_block = jnp.where(rsel[:, None], rg_rows, 0.0).reshape(-1)
 
-    # Roadgraph block (K nearest valid points within range).
-    rg = state.roadgraph_points
-    rx, ry = to_ego(rg.x, rg.y)
-    rdist = jnp.sqrt(rx ** 2 + ry ** 2)
-    rvalid = rg.valid & (rdist < _RG_RANGE)
-    rscore = jnp.where(rvalid, -rdist, -1e9)
-    r_top_vals, r_top_idx = jax.lax.top_k(rscore, _K_ROADGRAPH)
-    rsel = r_top_vals > -1e8
-    rg_feat = jnp.stack([rx[r_top_idx] / _POS_NORM, ry[r_top_idx] / _POS_NORM], axis=-1)
-    rg_feat = jnp.where(rsel[:, None], rg_feat, 0.0).reshape(-1)
+    # --- traffic lights block (K nearest, with history) -------------------- #
+    tl_hist = _past_window(state.log_traffic_light, state.timestep, P)
+    tlx, tly = to_ego(tl_hist.x, tl_hist.y)          # [L, P]
+    tl_valid_all = tl_hist.valid
+    tl_dist_now = jnp.sqrt(tlx[:, -1] ** 2 + tly[:, -1] ** 2)
+    tl_score = jnp.where(tl_valid_all[:, -1], -tl_dist_now, -jnp.inf)
+    tl_top_vals, tl_top_idx = _top_k_padded(tl_score, obs_layout.NUM_CLOSEST_TRAFFIC_LIGHTS)
+    tl_ok = jnp.isfinite(tl_top_vals)
+    tl_valid = tl_valid_all[tl_top_idx] & tl_ok[:, None]
+    tl_rows = jnp.concatenate(
+        [
+            norm_xy(tlx[tl_top_idx])[..., None],
+            norm_xy(tly[tl_top_idx])[..., None],
+            _one_hot_valid(tl_hist.state[tl_top_idx], obs_layout.NUM_TL_STATES),
+            tl_valid.astype(jnp.float32)[..., None],
+        ],
+        axis=-1,
+    )
+    traffic_lights_block = jnp.where(tl_valid[..., None], tl_rows, 0.0).reshape(-1)
 
-    obs = jnp.concatenate([ego_block, goal_block, agent_feat, rg_feat])
+    # --- path_target block (the SDC route) --------------------------------- #
+    # V-Max takes the longest on-route path and samples `num_points` every
+    # `points_gap`. This is the block the route reward is defined against, so
+    # without it the policy is scored on something it cannot see.
+    path_block = _path_target_features(state, to_ego, norm_xy)
+
+    # --- goal block (ours; V-Max's repro_sac_v2 has no goal features) ------- #
+    gx, gy = to_ego(goal_xy[0], goal_xy[1])
+    goal_dist = jnp.sqrt(gx ** 2 + gy ** 2)
+    gth = jnp.arctan2(gy, gx)
+    goal_block = jnp.concatenate(
+        [
+            jnp.stack(
+                [
+                    norm_xy(gx),
+                    norm_xy(gy),
+                    jnp.clip(goal_dist / obs_layout.MAX_METERS, 0.0, 1.0),
+                    jnp.cos(gth),
+                    jnp.sin(gth),
+                ]
+            ),
+            jnp.ones((1,)),
+        ]
+    )
+
+    obs = jnp.concatenate(
+        [
+            sdc_block,
+            agents_block,
+            roadgraph_block,
+            traffic_lights_block,
+            path_block,
+            goal_block,
+        ]
+    )
     obs = jnp.clip(obs, -_OBS_CLIP, _OBS_CLIP)
     ego_xy = jnp.stack([ex, ey]).astype(jnp.float32)
     return obs.astype(jnp.float32), goal_dist.astype(jnp.float32), ego_xy
+
+
+def _path_target_features(state: Any, to_ego, norm_xy) -> jax.Array:
+    """``num_points`` ego-frame route points, sampled every ``points_gap``.
+
+    Mirrors V-Max's ``VecFeaturesExtractor._build_target_features``: pick the
+    on-route SDC path with the most valid points, then take every ``points_gap``
+    th point. Emits zeros when the scenario was loaded without SDC paths
+    (``include_sdc_paths=False``), so the observation stays a fixed width.
+    """
+    n_pts = obs_layout.PATH_TARGET_NUM_POINTS
+    gap = obs_layout.PATH_TARGET_POINTS_GAP
+
+    paths = getattr(state, "sdc_paths", None)
+    if paths is None:
+        return jnp.zeros((n_pts * 2,), dtype=jnp.float32)
+
+    # on_route is per-path; broadcast it over that path's points.
+    mask = paths.valid & paths.on_route  # [num_paths, num_points]
+    best = jnp.argmax(jnp.sum(mask, axis=-1))
+    px, py = paths.x[best], paths.y[best]
+    pvalid = mask[best]
+
+    idx = jnp.arange(1, n_pts + 1) * gap
+    idx = jnp.minimum(idx, px.shape[-1] - 1)
+
+    ex_, ey_ = to_ego(px[idx], py[idx])
+    sel = pvalid[idx]
+    rows = jnp.stack([norm_xy(ex_), norm_xy(ey_)], axis=-1)
+    return jnp.where(sel[:, None], rows, 0.0).reshape(-1)

@@ -79,6 +79,7 @@ class RLDiffusionSource:
         delta_max_dy: float = 6.0,
         delta_max_dyaw: float = float(np.pi),
         device: str = "cpu",
+        algo: str = "ppo",
         seed: int = 0,
     ):
         self._deterministic = bool(deterministic)
@@ -96,9 +97,14 @@ class RLDiffusionSource:
 
         self._model = model
         if self._model is None and model_path is not None:
-            from stable_baselines3 import PPO
+            if algo == "sac":
+                from stable_baselines3 import SAC
 
-            self._model = PPO.load(model_path, device=device)
+                self._model = SAC.load(model_path, device=device)
+            else:
+                from stable_baselines3 import PPO
+
+                self._model = PPO.load(model_path, device=device)
 
     # ------------------------------------------------------------------ #
     def _select_action(self, obs: np.ndarray) -> np.ndarray:
@@ -167,10 +173,13 @@ def _run_smoke(args: argparse.Namespace) -> None:
         goal_threshold_m=args.goal_threshold_m,
         action_space_type=args.action_space,
         device=args.device,
+        algo=args.algo,
         seed=args.seed,
     )
 
-    policy_desc = f"PPO model {args.model}" if args.model else "random policy"
+    policy_desc = (
+        f"{args.algo.upper()} model {args.model}" if args.model else "random policy"
+    )
     print(f"[rl_diffusion_source] Rolling out {args.batch_size} scenarios with {policy_desc} ...")
     sim_state = rl_source.generate_batch(args.batch_size)
     print(f"[rl_diffusion_source] Batched SimulatorState: "
@@ -214,7 +223,9 @@ def _parse_args() -> argparse.Namespace:
 
     # Policy / rollout.
     p.add_argument("--model", type=str, default=None,
-                   help="Path to a PPO .zip checkpoint. If omitted, a random policy is used.")
+                   help="Path to a PPO/SAC .zip checkpoint. If omitted, a random policy is used.")
+    p.add_argument("--algo", type=str, default="ppo", choices=["ppo", "sac"],
+                   help="SB3 algorithm used by --model.")
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--max-episode-steps", type=int, default=80)
     p.add_argument("--goal-threshold-m", type=float, default=3.0)

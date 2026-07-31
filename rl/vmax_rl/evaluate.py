@@ -195,18 +195,29 @@ def main() -> None:
     env = make_env_for_evaluation(
         max_num_objects=max_num_objects,
         dynamics_model=dynamics.InvertibleBicycleModel(normalize_actions=True),
-        sdc_paths_from_data=False,
+        sdc_paths_from_data=True,
         observation_type=meta["observation_type"],
         observation_config=meta["observation_config"],
+        reward_type=meta.get("reward_type", "linear"),
+        reward_config=meta.get("reward_config", {}),
         termination_keys=meta["termination_keys"],
     )
+    use_reactive = meta.get("reactive_agents", not meta.get("log_replay_agents", False))
+    if use_reactive:
+        from rl.vmax_rl import env_utils
+
+        env = env_utils.attach_idm_sim_agents(env, desired_vel=meta.get("idm_desired_vel", 30.0))
+        print(f"[evaluate] Reactive IDM sim-agents ON (desired_vel={meta.get('idm_desired_vel', 30.0)}).")
+    else:
+        print("[evaluate] Legacy log-replay sim-agents.")
 
     params = _load_params(model_path)
     policy = _build_policy(env, meta, params)
 
     print("[evaluate] loading failure scenarios...")
     stacked, num = data.load_failure_scenarios(
-        failure_dir, max_num_objects=max_num_objects, limit=args.limit, verbose=True
+        failure_dir, max_num_objects=max_num_objects, limit=args.limit,
+        refit_sdc_log=args.refit_sdc_log, verbose=True
     )
 
     key = jax.random.PRNGKey(args.seed)
@@ -283,6 +294,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--goal-threshold-m", type=float, default=3.0)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--chunk-size", type=int, default=32)
+    p.add_argument("--refit-sdc-log", action="store_true",
+                   help="Refit each SDC's logged yaw/velocity to be bicycle-consistent "
+                        "(should match the setting used during training).")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out-dir", default=None)
     p.add_argument("--export-diffusion", default=None,

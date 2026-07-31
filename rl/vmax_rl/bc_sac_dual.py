@@ -39,6 +39,66 @@ if typing.TYPE_CHECKING:
     from waymax import env as waymax_env
 
 
+def _load_init_params(training_state, init_params, network, num_devices: int):
+    """Replace the freshly-initialized actor/critic weights with ``init_params``.
+
+    ``bc_sac.initialize`` only ever builds random networks (it takes a PRNG key
+    and nothing else), so warm-starting from a pretrained checkpoint means
+    swapping the params back out afterwards. Optimizer states are rebuilt from
+    the loaded params rather than carried over: the pretrained run's Adam moments
+    belong to a different task, and stale moments would blow the first few
+    updates away.
+
+    ``init_params`` may be a ``SACNetworkParams`` (what V-Max's SAC trainer
+    saves) or a ``BCSACNetworkParams``; only policy/value/target_value are used.
+    A SAC checkpoint's ``log_alpha`` is dropped — BC_SAC uses a fixed ``alpha``.
+    """
+    from vmax.agents.learning.hybrid.bc_sac.bc_sac_factory import BCSACNetworkParams
+
+    def _field(name):
+        if not hasattr(init_params, name):
+            raise ValueError(
+                f"init_params ({type(init_params).__name__}) has no '{name}' field; "
+                "expected a SACNetworkParams/BCSACNetworkParams checkpoint."
+            )
+        return getattr(init_params, name)
+
+    target = getattr(init_params, "target_value", None)
+    loaded = BCSACNetworkParams(
+        policy=_field("policy"),
+        value=_field("value"),
+        target_value=target if target is not None else _field("value"),
+    )
+
+    # The training state is already replicated across devices; compare against a
+    # single-device copy so the shape check sees real per-device shapes.
+    reference = pmap.unpmap(training_state).params
+    ref_shapes = [x.shape for x in jax.tree_util.tree_leaves(reference)]
+    new_shapes = [x.shape for x in jax.tree_util.tree_leaves(loaded)]
+    if ref_shapes != new_shapes:
+        raise ValueError(
+            "init_params does not match the network built from this run's config.\n"
+            f"  expected {len(ref_shapes)} arrays, first few: {ref_shapes[:4]}\n"
+            f"  checkpoint {len(new_shapes)} arrays, first few: {new_shapes[:4]}\n"
+            "The checkpoint was almost certainly trained with different "
+            "network.policy/value layer_sizes or a different observation_config. "
+            "Match them (e.g. --override algorithm.network.policy.layer_sizes=[256,256]) "
+            "and retry."
+        )
+
+    single = pmap.unpmap(training_state)
+    single = single.replace(
+        params=loaded,
+        rl_policy_optimizer_state=network.rl_policy_optimizer.init(loaded.policy),
+        imitation_policy_optimizer_state=network.imitation_policy_optimizer.init(loaded.policy),
+        value_optimizer_state=network.value_optimizer.init(loaded.value),
+    )
+    n_params = sum(x.size for x in jax.tree_util.tree_leaves(loaded))
+    print(f"-> Warm-started actor+critic from checkpoint ({n_params:,} params); optimizer states reset.")
+
+    return pmap.device_put_replicated(single, jax.local_devices()[:num_devices])
+
+
 def train(
     env: "waymax_env.PlanningAgentEnvironment",
     rl_data_generator: typing.Iterator["waymax_datatypes.SimulatorState"],
@@ -71,6 +131,7 @@ def train(
     progress_fn: Callable[[int, dict], None] = lambda *args: None,
     checkpoint_logdir: str = "",
     disable_tqdm: bool = False,
+    init_params: Any = None,
 ) -> Any:  # noqa: F821 - returns final params pytree
     """Train BC_SAC with separate imitation (expert) and RL (failure) data sources."""
     print(" BC_SAC (dual-source) ".center(48, "="))
@@ -80,6 +141,10 @@ def train(
 
     do_save = save_freq > 1 and checkpoint_logdir is not None
     do_evaluation = eval_freq >= 1 and eval_scenario is not None
+    # imitation_data_generator=None -> pure SAC (no behavior-cloning steps).
+    do_imitation = imitation_data_generator is not None
+    # Every iteration is BC when imitation_frequency==1 (skip RL buffer/prefill).
+    bc_only = do_imitation and imitation_frequency == 1
 
     num_steps = num_episode_per_epoch * scenario_length
     env_steps_per_iter = num_steps * num_envs
@@ -101,6 +166,9 @@ def train(
         num_devices,
         network_key,
     )
+    if init_params is not None:
+        training_state = _load_init_params(training_state, init_params, network, num_devices)
+
     rl_learning_fn = bc_sac.make_rl_sgd_step(network, alpha, discount, tau)
     imitation_learning_fn = bc_sac.make_imitation_sgd_step(network, loss_type)
 
@@ -176,40 +244,44 @@ def train(
         )
 
     print("-> Prefilling replay buffers...")
-    # RL prefill from failure cases.
-    prefill_rl = jax.pmap(
-        partial(
-            pipeline.prefill_replay_buffer,
-            env=env,
-            replay_buffer=rl_replay_buffer,
-            action_shape=(num_envs, action_size),
-            learning_start=learning_start,
-        ),
-        axis_name="batch",
-    )
-    rng, rb_key = jax.random.split(rng)
-    rl_buffer_state = jax.pmap(rl_replay_buffer.init)(jax.random.split(rb_key, num_devices))
-    rng, prefill_key = jax.random.split(rng)
-    rl_buffer_state = prefill_rl(next(rl_data_generator), rl_buffer_state, jax.random.split(prefill_key, num_devices))
-    jax.tree_util.tree_map(lambda x: x.block_until_ready(), rl_buffer_state)
+    rl_buffer_state = None
+    if not bc_only:
+        # RL prefill from failure cases.
+        prefill_rl = jax.pmap(
+            partial(
+                pipeline.prefill_replay_buffer,
+                env=env,
+                replay_buffer=rl_replay_buffer,
+                action_shape=(num_envs, action_size),
+                learning_start=learning_start,
+            ),
+            axis_name="batch",
+        )
+        rng, rb_key = jax.random.split(rng)
+        rl_buffer_state = jax.pmap(rl_replay_buffer.init)(jax.random.split(rb_key, num_devices))
+        rng, prefill_key = jax.random.split(rng)
+        rl_buffer_state = prefill_rl(next(rl_data_generator), rl_buffer_state, jax.random.split(prefill_key, num_devices))
+        jax.tree_util.tree_map(lambda x: x.block_until_ready(), rl_buffer_state)
 
-    # Imitation prefill from expert data.
-    prefill_il = jax.pmap(
-        partial(
-            pipeline.prefill_replay_buffer,
-            env=env,
-            replay_buffer=imitation_replay_buffer,
-            action_shape=(num_envs, action_size),
-            learning_start=learning_start,
-        ),
-        axis_name="batch",
-    )
-    rng, rb_key, prefill_key = jax.random.split(rng, 3)
-    imitation_buffer_state = jax.pmap(imitation_replay_buffer.init)(jax.random.split(rb_key, num_devices))
-    imitation_buffer_state = prefill_il(
-        next(imitation_data_generator), imitation_buffer_state, jax.random.split(prefill_key, num_devices)
-    )
-    jax.tree_util.tree_map(lambda x: x.block_until_ready(), imitation_buffer_state)
+    # Imitation prefill from expert data (skipped for pure SAC).
+    imitation_buffer_state = None
+    if do_imitation:
+        prefill_il = jax.pmap(
+            partial(
+                pipeline.prefill_replay_buffer,
+                env=env,
+                replay_buffer=imitation_replay_buffer,
+                action_shape=(num_envs, action_size),
+                learning_start=learning_start,
+            ),
+            axis_name="batch",
+        )
+        rng, rb_key, prefill_key = jax.random.split(rng, 3)
+        imitation_buffer_state = jax.pmap(imitation_replay_buffer.init)(jax.random.split(rb_key, num_devices))
+        imitation_buffer_state = prefill_il(
+            next(imitation_data_generator), imitation_buffer_state, jax.random.split(prefill_key, num_devices)
+        )
+        jax.tree_util.tree_map(lambda x: x.block_until_ready(), imitation_buffer_state)
     print("-> Prefilling replay buffers... Done.")
 
     time_training = perf_counter()
@@ -220,7 +292,7 @@ def train(
         rng, iter_key = jax.random.split(rng)
         iter_keys = jax.random.split(iter_key, num_devices)
 
-        is_imitation = (it % imitation_frequency) == 0
+        is_imitation = bc_only or (do_imitation and (it % imitation_frequency) == 0)
 
         t = perf_counter()
         if is_imitation:
@@ -256,6 +328,15 @@ def train(
             "train/mode": 1.0 if is_imitation else 0.0,
             **{f"{name}": value for name, value in training_metrics.items()},
         }
+        # Tag rollout metrics by mode so W&B curves don't mix expert (+5) and
+        # policy (−) rewards into one misleading ``ep_rew_mean``.
+        mode_prefix = "il_" if is_imitation else "rl_"
+        for rollout_key in ("ep_rew_mean", "ep_len_mean"):
+            if rollout_key in metrics:
+                metrics[f"{mode_prefix}{rollout_key}"] = metrics[rollout_key]
+        for loss_key in ("imitation_loss", "policy_loss", "value_loss"):
+            if loss_key in metrics:
+                metrics[f"{mode_prefix}{loss_key}"] = metrics[loss_key]
 
         if do_save and (it % save_freq == 0):
             train_utils.save_params(f"{checkpoint_logdir}/model_{current_step}.pkl", pmap.unpmap(training_state.params))
