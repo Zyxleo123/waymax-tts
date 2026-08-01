@@ -21,6 +21,7 @@ import dataclasses
 import json
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from glob import glob
 from pathlib import Path
 from typing import Any, Sequence
@@ -33,6 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import jax
 from waymax import config as waymax_config
+from waymax import dataloader
 
 from viz.render import _load_scenario_state_batch_fast
 
@@ -53,6 +55,100 @@ def _to_host_pytree(tree: Any) -> Any:
 def _slice_batched_state(state_batch: Any, batch_idx: int) -> Any:
     """Extracts one unbatched scenario (prefix shape ()) from a [B, ...] state."""
     return jax.tree_util.tree_map(lambda a: np.asarray(a[batch_idx]), state_batch)
+
+
+def _scenario_batch_size(state: Any) -> int:
+    """Leading batch dim of a Waymax state, or 1 if already unbatched."""
+    is_sdc = np.asarray(state.object_metadata.is_sdc)
+    if is_sdc.ndim >= 2:
+        return int(is_sdc.shape[0])
+    return 1
+
+
+def _iter_unbatched_scenarios(host: Any) -> Iterator[Any]:
+    """Yield unbatched scenarios from a host state (batch dim 0 or already flat)."""
+    is_sdc = np.asarray(host.object_metadata.is_sdc)
+    if is_sdc.ndim == 1:
+        yield host
+        return
+    batch_size = _scenario_batch_size(host)
+    for i in range(batch_size):
+        yield _slice_batched_state(host, i)
+
+
+def make_expert_scenario_generator(
+    expert_path: str,
+    *,
+    max_num_objects: int | None = None,
+    batch_size: int = 1,
+    seed: int | None = 0,
+    repeat: int | None = None,
+    distributed: bool | None = None,
+    num_paths: int = 45,
+    num_points_per_path: int = 800,
+) -> Iterator[Any]:
+    """Stream unbatched host NumPy scenarios from ``expert_path``.
+
+    Wraps Waymax's own shuffled ``simulator_state_generator`` so a training loop
+    can draw from an arbitrarily large TFRecord glob (a full WOMD split is
+    ~500k scenarios) without ever materializing more than one batch at a time --
+    the eager ``ScenarioSource`` above caches every requested scenario as a host
+    NumPy pytree and is only viable for a few hundred to a few thousand of them.
+
+    Default ``repeat=None`` loops forever (an SAC training stream). ``repeat=1``
+    yields each scenario in the split exactly once then stops (a BC epoch).
+
+    ``num_paths``/``num_points_per_path`` default to WOD 1.3.1's shape (see
+    ``waymax.config.WOD_1_3_1_TRAINING``) -- with ``include_sdc_paths=True``
+    Waymax's dataloader requires both to be set (it can't infer them from the
+    TFRecord), and building a ``DatasetConfig`` from scratch instead of via
+    ``dataclasses.replace(WOD_1_3_1_TRAINING, ...)`` (as ``ScenarioSource``
+    does) drops them.
+    """
+    if distributed is None:
+        distributed = repeat is None
+    config = waymax_config.DatasetConfig(
+        path=expert_path,
+        max_num_objects=max_num_objects,
+        include_sdc_paths=True,
+        num_paths=num_paths,
+        num_points_per_path=num_points_per_path,
+        batch_dims=(int(batch_size),),
+        shuffle_seed=seed,
+        repeat=repeat,
+        distributed=distributed,
+        drop_remainder=False if repeat == 1 else True,
+        data_format=waymax_config.DataFormat.TFRECORD,
+    )
+    gen = dataloader.simulator_state_generator(config)
+    while True:
+        try:
+            host = _to_host_pytree(next(gen))
+        except StopIteration:
+            return
+        for scen in _iter_unbatched_scenarios(host):
+            yield scen
+
+
+class StreamingScenarioSource:
+    """A ``sample_scenario()``-only source backed by an infinite scenario stream.
+
+    Unlike :class:`ScenarioSource`, nothing is cached: every ``sample_scenario``
+    call pulls the next scenario off ``scenario_iter``. Waymax's dataloader does
+    its own shuffling as it streams (``shuffle_seed``), so there is no notion of
+    "index" here -- this exists for :class:`~rl.waymax_env.StreamingWaymaxGymEnv`,
+    which resets by sampling rather than by index, the same way
+    :class:`~rl.bc_core.MixedScenarioSource` does for the expert-stream half of
+    BC-SAC's mix.
+    """
+
+    def __init__(self, scenario_iter: Iterator[Any], *, num_objects: int):
+        self._iter = scenario_iter
+        self.num_objects = int(num_objects)
+
+    def sample_scenario(self, rng: np.random.Generator | None = None) -> Any:
+        del rng  # shuffling happens inside the Waymax dataloader, not here
+        return next(self._iter)
 
 
 class CachedScenarioSource:

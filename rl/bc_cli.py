@@ -32,8 +32,12 @@ def add_env_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--r-goal-bonus", type=float, default=10.0)
     p.add_argument("--route-reward", action="store_true")
     p.add_argument("--r-lateral-penalty", type=float, default=0.5)
-    p.add_argument("--terminate-on-offroad", action="store_true")
-    p.add_argument("--terminate-on-collision", action="store_true")
+    p.add_argument("--terminate-on-offroad", action=argparse.BooleanOptionalAction,
+                   default=False)
+    # See train_sac.py: store_true here silently overrode the RewardConfig
+    # default of True.
+    p.add_argument("--terminate-on-collision", action=argparse.BooleanOptionalAction,
+                   default=True)
     reactive = p.add_mutually_exclusive_group()
     reactive.add_argument(
         "--reactive-agents", dest="reactive_agents", action="store_true",

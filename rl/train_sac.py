@@ -29,6 +29,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 import argparse
+import itertools
 import sys
 from pathlib import Path
 
@@ -38,14 +39,23 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from rl.bc_core import load_expert_eval_source
 from rl.encoders import add_encoder_args, build_policy_kwargs
-from rl.scenario_source import ScenarioSource
+from rl.run_config import save_run_config
+from rl.scenario_source import (
+    CachedScenarioSource,
+    ScenarioSource,
+    StreamingScenarioSource,
+    _ensure_unbatched_scenario,
+    _to_host_pytree,
+    make_expert_scenario_generator,
+)
 from rl.sac_callbacks import (
     WaymaxEpisodeMetricsCallback,
     WaymaxPeriodicEvalCallback,
     make_monitored_env,
 )
-from rl.waymax_env import RewardConfig, WaymaxGymEnv
+from rl.waymax_env import RewardConfig, StreamingWaymaxGymEnv, WaymaxGymEnv
 
 
 def _latest_checkpoint(ckpt_dir: Path) -> Path | None:
@@ -80,10 +90,33 @@ def _parse_indices(indices: str | None, num_scenarios: int | None) -> list[int] 
     return None
 
 
-def build_scenario_source(args) -> ScenarioSource:
+def build_scenario_source(args) -> ScenarioSource | StreamingScenarioSource:
     # SDC paths are needed for the observation's ``path_target`` block (the route
     # the progression / off-route reward is defined against). WOMD 1.3.1 ships
     # them as ``path_samples`` (45 paths x 800 points).
+    if args.stream:
+        if not args.tfrecord:
+            raise ValueError(
+                "--stream requires --tfrecord pointing at the full training glob "
+                "(e.g. /path/to/training_tfexample.tfrecord@1000)."
+            )
+        gen = make_expert_scenario_generator(
+            args.tfrecord,
+            max_num_objects=args.max_num_objects,
+            batch_size=1,
+            seed=args.seed,
+        )
+        # StreamingScenarioSource needs num_objects up front (WaymaxGymEnv sizes
+        # its env config from it); peek one scenario off the stream to learn it,
+        # then hand the same scenario back so nothing is dropped.
+        first = _ensure_unbatched_scenario(_to_host_pytree(next(gen)))
+        num_objects = int(np.asarray(first.object_metadata.is_sdc).shape[-1])
+        return StreamingScenarioSource(
+            itertools.chain([first], (
+                _ensure_unbatched_scenario(_to_host_pytree(s)) for s in gen
+            )),
+            num_objects=num_objects,
+        )
     if args.failure_dir:
         return ScenarioSource.from_failure_dir(
             args.failure_dir,
@@ -102,7 +135,24 @@ def build_scenario_source(args) -> ScenarioSource:
             max_num_objects=args.max_num_objects,
             include_sdc_paths=True,
         )
-    raise ValueError("Provide either --failure-dir or --tfrecord.")
+    raise ValueError("Provide either --failure-dir, --tfrecord, or --stream --tfrecord.")
+
+
+def build_stream_eval_source(args) -> CachedScenarioSource:
+    """A fixed, cacheable eval set for ``--stream`` runs.
+
+    The training source there is an infinite generator with no notion of length
+    or a fixed slice, so eval draws its own fixed set of scenarios once (a
+    different seed, so it isn't just replaying the start of the training stream)
+    and caches them for repeat use across every ``eval_freq``.
+    """
+    n = int(args.eval_episodes) if args.eval_episodes is not None else 64
+    return load_expert_eval_source(
+        args.tfrecord,
+        max_num_objects=args.max_num_objects,
+        num_scenarios=n,
+        seed=args.eval_seed if args.eval_seed is not None else args.seed + 777,
+    )
 
 
 def make_base_env_fn(source: ScenarioSource, args, *, seed: int, sequential: bool):
@@ -121,8 +171,10 @@ def make_base_env_fn(source: ScenarioSource, args, *, seed: int, sequential: boo
         off_route_penalty=args.r_off_route,
     )
 
+    env_cls = StreamingWaymaxGymEnv if isinstance(source, StreamingScenarioSource) else WaymaxGymEnv
+
     def _thunk():
-        return WaymaxGymEnv(
+        return env_cls(
             source,
             reward_config=reward_cfg,
             max_episode_steps=args.max_episode_steps,
@@ -161,7 +213,8 @@ def main():
     device = args.device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[train_sac] {len(source)} scenarios | device={device} | encoder={args.encoder}")
+    n_scenarios_desc = "streaming (unbounded)" if args.stream else str(len(source))
+    print(f"[train_sac] {n_scenarios_desc} scenarios | device={device} | encoder={args.encoder}")
 
     env_fns = [
         make_env_fn(source, args, seed=args.seed + i, sequential=False)
@@ -170,9 +223,15 @@ def main():
     vec_env = DummyVecEnv(env_fns)
 
     eval_env = None
-    n_eval_episodes = len(source) if args.eval_episodes is None else int(args.eval_episodes)
-    if args.eval_freq > 0 and not args.smoke:
-        eval_env = make_base_env_fn(source, args, seed=args.seed + 10_000, sequential=True)()
+    if args.stream:
+        eval_source = build_stream_eval_source(args)
+        n_eval_episodes = len(eval_source) if args.eval_episodes is None else int(args.eval_episodes)
+        if args.eval_freq > 0 and not args.smoke:
+            eval_env = make_base_env_fn(eval_source, args, seed=args.seed + 10_000, sequential=True)()
+    else:
+        n_eval_episodes = len(source) if args.eval_episodes is None else int(args.eval_episodes)
+        if args.eval_freq > 0 and not args.smoke:
+            eval_env = make_base_env_fn(source, args, seed=args.seed + 10_000, sequential=True)()
 
     ent_coef: str | float = args.ent_coef
     if ent_coef != "auto":
@@ -281,7 +340,11 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     out_path = save_dir / "sac_waymax"
     model.save(out_path.as_posix())
+    cfg_path = save_run_config(
+        save_dir, args, extra={"entrypoint": "train_sac", "total_timesteps": args.total_timesteps}
+    )
     print(f"[train_sac] Saved model to {out_path}.zip")
+    print(f"[train_sac] Saved environment config to {cfg_path}")
 
     if run is not None:
         run.finish()
@@ -293,11 +356,21 @@ def _parse_args():
     p.add_argument("--failure-dir", type=str, default=None,
                    help="Directory of per-scenario result JSONs (failure cases).")
     p.add_argument("--tfrecord", type=str, default=None,
-                   help="Single TFRecord file to load scenarios from.")
+                   help="TFRecord file (or, with --stream, a sharded glob like "
+                        ".../training_tfexample.tfrecord@1000) to load scenarios from.")
     p.add_argument("--indices", type=str, default=None,
-                   help="Comma-separated scenario indices for --tfrecord.")
+                   help="Comma-separated scenario indices for --tfrecord (ignored with --stream).")
     p.add_argument("--num-scenarios", type=int, default=None,
-                   help="Use indices [0, N) from --tfrecord.")
+                   help="Use indices [0, N) from --tfrecord (ignored with --stream).")
+    p.add_argument("--stream", action="store_true",
+                   help="Train on the full --tfrecord glob by streaming shuffled scenarios "
+                        "(Waymax's own dataloader) instead of caching a fixed list in host "
+                        "RAM. Use for the full WOMD training split (~500k scenarios, too "
+                        "large for --indices/--num-scenarios' eager ScenarioSource). "
+                        "--eval-episodes scenarios are drawn once from a second stream "
+                        "(--eval-seed) and cached for repeatable periodic eval.")
+    p.add_argument("--eval-seed", type=int, default=None,
+                   help="Seed for the --stream held-out eval set. Default: --seed + 777.")
     p.add_argument("--include-successes", action="store_true",
                    help="With --failure-dir, also include successful scenarios.")
     p.add_argument("--limit", type=int, default=None,
@@ -324,9 +397,11 @@ def _parse_args():
     p.add_argument("--r-collision", type=float, default=-10.0)
     p.add_argument("--r-offroad", type=float, default=-5.0)
     p.add_argument("--r-goal-bonus", type=float, default=10.0)
-    p.add_argument("--terminate-on-offroad", action="store_true",
-                   help="End the episode on offroad (default: penalize but continue). "
-                        "Stops the policy from tolerating sustained off-road driving.")
+    p.add_argument("--terminate-on-offroad", action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help="End the episode on offroad (default: penalize once and "
+                        "continue). Worth enabling if the policy learns to tolerate "
+                        "sustained off-road driving now that the penalty is one-time.")
     p.add_argument("--route-reward", action="store_true",
                    help="Reward progress along the expert log path (on-road, "
                         "collision-free) instead of straight-line distance to the "
@@ -341,10 +416,17 @@ def _parse_args():
                         "this many meters, instead of the per-meter penalty.")
     p.add_argument("--r-off-route", type=float, default=-0.2,
                    help="Per-step off-route penalty (V-Max reward_config.off_route).")
-    p.add_argument("--terminate-on-collision", action="store_true",
-                   help="End the episode on collision (default: penalize but continue).")
-    p.add_argument("--reactive-agents", action="store_true",
-                   help="Use IDM sim agents for non-ego objects instead of log replay.")
+    # BooleanOptionalAction, not store_true: store_true forces a False default,
+    # which silently overrode RewardConfig.terminate_on_collision=True for every
+    # launcher that did not pass the flag.
+    p.add_argument("--terminate-on-collision", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="End the episode on collision (default: yes). "
+                        "--no-terminate-on-collision penalizes once and continues.")
+    p.add_argument("--reactive-agents", action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help="Use IDM sim agents for non-ego objects instead of log replay. "
+                        "Recorded in run_config.json so eval reproduces it.")
     p.add_argument("--idm-desired-vel", type=float, default=30.0,
                    help="IDM free-road desired speed (m/s) for --reactive-agents.")
 

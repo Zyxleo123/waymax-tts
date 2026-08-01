@@ -87,7 +87,11 @@ class RewardConfig:
     progress: float = 1.0       # reward per meter of progress (straight-line or route)
     step_penalty: float = 0.0   # constant per-step penalty
     action_penalty: float = 0.01  # penalty on sum(action^2)
-    collision: float = -10.0    # one-time penalty; ends the episode
+    # Collision / offroad are charged at most ONCE per episode (on the first
+    # violating step), not on every violating step. Integrating them made
+    # standing still the safe play: a policy that never moves scores ~0, while
+    # any attempt to drive risked -5/step for as long as the episode ran.
+    collision: float = -10.0    # one-time penalty; ends the episode by default
     offroad: float = -5.0       # one-time penalty
     goal_bonus: float = 10.0    # one-time bonus; ends the episode
     goal_threshold_m: float = 3.0
@@ -233,6 +237,11 @@ class WaymaxGymEnv(gym.Env):
         self._prev_s: float = 0.0
         self._step_count: int = 0
         self._max_steps: int = self._max_episode_steps_cap
+        # Whether the one-time collision / offroad penalties have been paid this
+        # episode. info["collision"] / info["offroad"] stay per-step (the
+        # callbacks OR them over the episode themselves).
+        self._charged_collision: bool = False
+        self._charged_offroad: bool = False
 
     # ------------------------------------------------------------------ #
     def _next_scenario_index(self) -> int:
@@ -248,6 +257,22 @@ class WaymaxGymEnv(gym.Env):
             self._np_rng = np.random.default_rng(seed)
 
         scen_np = self._source.get(self._next_scenario_index())
+        spec_dict = (
+            dataclasses.asdict(self._source.spec(self._seq_cursor - 1))
+            if self._sequential
+            else {}
+        )
+        return self._reset_from_scenario(scen_np, spec_dict)
+
+    def _reset_from_scenario(self, scen_np: Any, spec_dict: dict) -> tuple[np.ndarray, dict]:
+        """Shared reset body: takes an already-fetched host scenario and drives the
+        simulator, goal, route and episode bookkeeping to a fresh episode start.
+
+        Factored out so subclasses that fetch scenarios differently -- by index
+        (this class), by sampling a mix (``MixedWaymaxGymEnv`` in bc_core.py), or
+        by pulling the next one off an infinite stream (``StreamingWaymaxGymEnv``
+        below) -- don't each reimplement this bookkeeping.
+        """
         scen = jax.tree_util.tree_map(jnp.asarray, scen_np)
         self._state = self._jit_reset(scen)
         self._goal_xy = jnp.asarray(_compute_goal_xy(scen_np), dtype=jnp.float32)
@@ -261,6 +286,8 @@ class WaymaxGymEnv(gym.Env):
             np.asarray(ego_xy), self._route_xy, self._route_s
         )
         self._step_count = 0
+        self._charged_collision = False
+        self._charged_offroad = False
 
         num_timesteps = int(np.asarray(scen_np.log_trajectory.x).shape[-1])
         init_steps = self._env.config.init_steps
@@ -269,9 +296,7 @@ class WaymaxGymEnv(gym.Env):
         info = {
             "goal_dist": self._prev_dist,
             "lateral_deviation_m": float(init_lateral),
-            "scenario": dataclasses.asdict(self._source.spec(self._seq_cursor - 1))
-            if self._sequential
-            else {},
+            "scenario": spec_dict,
         }
         return np.asarray(obs, dtype=np.float32), info
 
@@ -317,10 +342,14 @@ class WaymaxGymEnv(gym.Env):
 
         terminated = False
         if collision:
-            reward += rc.collision
+            if not self._charged_collision:
+                reward += rc.collision
+                self._charged_collision = True
             terminated = terminated or rc.terminate_on_collision
         if off:
-            reward += rc.offroad
+            if not self._charged_offroad:
+                reward += rc.offroad
+                self._charged_offroad = True
             terminated = terminated or rc.terminate_on_offroad
         if reached:
             reward += rc.goal_bonus
@@ -402,6 +431,27 @@ class WaymaxGymEnv(gym.Env):
             "log_yaw": ego_row(log.yaw).astype(float).tolist(),
             "log_valid": ego_row(log.valid).astype(bool).tolist(),
         }
+
+
+class StreamingWaymaxGymEnv(WaymaxGymEnv):
+    """A :class:`WaymaxGymEnv` that resets from an infinite scenario stream.
+
+    ``WaymaxGymEnv`` resets by index into a :class:`~rl.scenario_source.ScenarioSource`,
+    which caches every scenario it might be asked for as a host NumPy pytree --
+    fine for a few hundred failure cases, but the full WOMD training split is
+    ~500k scenarios and would not fit in host RAM. Pass a
+    :class:`~rl.scenario_source.StreamingScenarioSource` (built from
+    ``rl.scenario_source.make_expert_scenario_generator`` over the *whole*
+    training glob, not just the non-failure shards BC uses) and each reset pulls
+    the next scenario off the stream instead.
+    """
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        gym.Env.reset(self, seed=seed)  # seeds self.np_random; skip the index-based base reset
+        if seed is not None:
+            self._np_rng = np.random.default_rng(seed)
+        scen_np = self._source.sample_scenario(self._np_rng)
+        return self._reset_from_scenario(scen_np, spec_dict={})
 
 
 def _splice_sdc_sim_into_log(state: Any) -> Any:
@@ -495,6 +545,17 @@ def _compute_goal_xy(scen_np: Any) -> np.ndarray:
 def _one_hot_valid(idx: jax.Array, num_classes: int) -> jax.Array:
     """One-hot over ``num_classes``, clamping out-of-range ids into range."""
     return jax.nn.one_hot(jnp.clip(idx, 0, num_classes - 1), num_classes)
+
+
+def _one_hot_tl_state(idx: jax.Array, num_classes: int) -> jax.Array:
+    """One-hot over traffic-light states 1..``num_classes``, dropping UNKNOWN.
+
+    Mirrors V-Max: ``one_hot(state, num_classes + 1)[..., 1:]``. Waymax state 0
+    is UNKNOWN and must map to an all-zero row, not to its own channel -- a plain
+    ``one_hot(state, 8)`` both gives UNKNOWN a channel and shifts states 1..7 down
+    by one, aliasing state 8 onto state 7 once clipped.
+    """
+    return jax.nn.one_hot(idx, num_classes + 1)[..., 1:]
 
 
 def _past_window(traj: Any, timestep: jax.Array, num_steps: int):
@@ -627,7 +688,7 @@ def _compute_observation(state: Any, goal_xy: jax.Array):
         [
             norm_xy(tlx[tl_top_idx])[..., None],
             norm_xy(tly[tl_top_idx])[..., None],
-            _one_hot_valid(tl_hist.state[tl_top_idx], obs_layout.NUM_TL_STATES),
+            _one_hot_tl_state(tl_hist.state[tl_top_idx], obs_layout.NUM_TL_STATES),
             tl_valid.astype(jnp.float32)[..., None],
         ],
         axis=-1,
@@ -678,8 +739,12 @@ def _path_target_features(state: Any, to_ego, norm_xy) -> jax.Array:
     """``num_points`` ego-frame route points, sampled every ``points_gap``.
 
     Mirrors V-Max's ``VecFeaturesExtractor._build_target_features``: pick the
-    on-route SDC path with the most valid points, then take every ``points_gap``
-    th point. Emits zeros when the scenario was loaded without SDC paths
+    on-route SDC path with the most valid points, find the path point nearest the
+    ego, then sample every ``points_gap``th point *ahead of that one*. The window
+    has to move with the ego -- sampling absolute indices from the start of the
+    path means the targets fall behind the vehicle as it drives, so the policy
+    loses the upcoming route exactly while being rewarded for advancing along it.
+    Emits zeros when the scenario was loaded without SDC paths
     (``include_sdc_paths=False``), so the observation stays a fixed width.
     """
     n_pts = obs_layout.PATH_TARGET_NUM_POINTS
@@ -695,10 +760,19 @@ def _path_target_features(state: Any, to_ego, norm_xy) -> jax.Array:
     px, py = paths.x[best], paths.y[best]
     pvalid = mask[best]
 
-    idx = jnp.arange(1, n_pts + 1) * gap
-    idx = jnp.minimum(idx, px.shape[-1] - 1)
+    # Anchor the window on the valid path point closest to the ego.
+    all_ex, all_ey = to_ego(px, py)
+    all_d2 = all_ex ** 2 + all_ey ** 2
+    cur = jnp.argmin(jnp.where(pvalid, all_d2, jnp.inf))
 
-    ex_, ey_ = to_ego(px[idx], py[idx])
-    sel = pvalid[idx]
+    last = px.shape[-1] - 1
+    idx = cur + jnp.arange(1, n_pts + 1) * gap
+    # Past the end of the path there is no route left to point at; clamping would
+    # emit the final point `n_pts` times and read as "the route stops here".
+    in_range = idx <= last
+    idx = jnp.minimum(idx, last)
+
+    ex_, ey_ = all_ex[idx], all_ey[idx]
+    sel = pvalid[idx] & in_range
     rows = jnp.stack([norm_xy(ex_), norm_xy(ey_)], axis=-1)
     return jnp.where(sel[:, None], rows, 0.0).reshape(-1)

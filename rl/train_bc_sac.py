@@ -65,6 +65,7 @@ from rl.bc_core import (
     train_bc_actor,
 )
 from rl.encoders import add_encoder_args, build_policy_kwargs
+from rl.run_config import save_run_config
 from rl.sac_callbacks import (
     WaymaxEpisodeMetricsCallback,
     WaymaxPeriodicEvalCallback,
@@ -385,6 +386,7 @@ def main() -> None:
         out_path = save_dir / mode
         model.save(out_path.as_posix())
         meta = {
+            "entrypoint": "train_bc_sac",
             "mode": mode,
             "expert_path": expert_path,
             "bc_transitions": int(obs.shape[0]) if obs is not None else 0,
@@ -394,9 +396,12 @@ def main() -> None:
             "actor_freeze_timesteps": args.actor_freeze_timesteps,
             "total_timesteps": args.total_timesteps,
         }
-        with open(save_dir / "run_config.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        # save_run_config adds the "env" block (action space, reward, reactive
+        # agents, encoder) on top of these training-process fields, so eval_sac
+        # can rebuild the exact environment this checkpoint was trained in.
+        cfg_path = save_run_config(save_dir, args, extra=meta)
         print(f"{log_prefix} Saved model to {out_path}.zip")
+        print(f"{log_prefix} Saved environment config to {cfg_path}")
 
         if run is not None:
             run.finish()

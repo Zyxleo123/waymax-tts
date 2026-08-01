@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from rl.run_config import RUN_CONFIG_NAME, apply_run_config_defaults, find_run_config
 from rl.scenario_source import ScenarioSource
 from rl.waymax_env import RewardConfig, WaymaxGymEnv
 
@@ -231,8 +232,10 @@ def _parse_args():
     p.add_argument("--r-collision", type=float, default=-10.0)
     p.add_argument("--r-offroad", type=float, default=-5.0)
     p.add_argument("--r-goal-bonus", type=float, default=10.0)
-    p.add_argument("--terminate-on-offroad", action="store_true")
-    p.add_argument("--terminate-on-collision", action="store_true")
+    p.add_argument("--terminate-on-offroad", action=argparse.BooleanOptionalAction,
+                   default=False)
+    p.add_argument("--terminate-on-collision", action=argparse.BooleanOptionalAction,
+                   default=True)
     p.add_argument("--route-reward", action="store_true")
     p.add_argument("--r-lateral-penalty", type=float, default=0.5)
     # Keep these in sync with train_sac.py: the launcher passes one shared
@@ -243,15 +246,49 @@ def _parse_args():
                         "per-meter lateral penalty.")
     p.add_argument("--r-off-route", type=float, default=-0.2,
                    help="Per-step off-route penalty (V-Max reward_config.off_route).")
-    p.add_argument("--reactive-agents", action="store_true",
-                   help="Use IDM sim agents for non-ego objects instead of log replay.")
+    p.add_argument("--reactive-agents", action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help="Use IDM sim agents for non-ego objects instead of log replay. "
+                        "Inherited from the checkpoint's run_config.json when present "
+                        "-- BC-SAC trains with IDM agents, so evaluating against log "
+                        "replay reports metrics from a different environment.")
     p.add_argument("--idm-desired-vel", type=float, default=30.0)
+    p.add_argument("--run-config", type=str, default=None,
+                   help="run_config.json describing the environment the checkpoint "
+                        "was trained in. Defaults to the one saved beside the "
+                        "checkpoint; --no-run-config evaluates on this script's own "
+                        "defaults instead.")
+    p.add_argument("--no-run-config", dest="use_run_config", action="store_false",
+                   help="Ignore the checkpoint's saved environment config.")
+    p.set_defaults(use_run_config=True)
     p.add_argument("--num-episodes", type=int, default=None)
     p.add_argument("--out-dir", type=str, default=None,
                    help="Where to save per-scenario rollouts + summary.json. "
                         "Defaults to '<model_dir>/eval_rollouts'.")
     p.add_argument("--device", type=str, default="cpu")
-    return p.parse_args()
+
+    args = p.parse_args()
+    if not args.use_run_config:
+        return args
+
+    cfg_path = Path(args.run_config) if args.run_config else find_run_config(args.model)
+    if cfg_path is None or not Path(cfg_path).is_file():
+        # Silence here is how training and eval drifted apart in the first place.
+        print(
+            f"[eval_sac] WARNING: no {RUN_CONFIG_NAME} found beside {args.model}; "
+            "falling back to this script's defaults. Metrics are only comparable "
+            "if the checkpoint was trained with "
+            f"reactive_agents={args.reactive_agents}, action_space={args.action_space}, "
+            f"terminate_on_collision={args.terminate_on_collision}."
+        )
+        return args
+
+    applied = apply_run_config_defaults(p, cfg_path)
+    # Re-parse against the seeded defaults so explicitly passed flags still win.
+    args = p.parse_args()
+    args.run_config_path = str(cfg_path)
+    print(f"[eval_sac] environment inherited from {cfg_path}: {applied}")
+    return args
 
 
 if __name__ == "__main__":

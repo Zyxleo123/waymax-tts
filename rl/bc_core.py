@@ -30,7 +30,6 @@ import torch as th
 import torch.nn.functional as F
 from waymax import config as waymax_config
 from waymax import datatypes
-from waymax import dataloader
 from waymax.agents.expert import infer_expert_action
 
 from rl.scenario_source import (
@@ -40,6 +39,7 @@ from rl.scenario_source import (
     _ensure_unbatched_scenario,
     _slice_batched_state,
     _to_host_pytree,
+    make_expert_scenario_generator,
 )
 from rl.waymax_env import (
     POLICY_FRIENDLY_COLLISION,
@@ -131,62 +131,6 @@ def build_expert_shard_path(
     return f"{base}@{k}"
 
 
-def _scenario_batch_size(state: Any) -> int:
-    """Leading batch dim of a Waymax state, or 1 if already unbatched."""
-    is_sdc = np.asarray(state.object_metadata.is_sdc)
-    if is_sdc.ndim >= 2:
-        return int(is_sdc.shape[0])
-    return 1
-
-
-def _iter_unbatched_scenarios(host: Any) -> Iterator[Any]:
-    """Yield unbatched scenarios from a host state (batch dim 0 or already flat)."""
-    is_sdc = np.asarray(host.object_metadata.is_sdc)
-    if is_sdc.ndim == 1:
-        yield host
-        return
-    batch_size = _scenario_batch_size(host)
-    for i in range(batch_size):
-        yield _slice_batched_state(host, i)
-
-
-def make_expert_scenario_generator(
-    expert_path: str,
-    *,
-    max_num_objects: int | None = None,
-    batch_size: int = 1,
-    seed: int | None = 0,
-    repeat: int | None = None,
-    distributed: bool | None = None,
-) -> Iterator[Any]:
-    """Stream unbatched host NumPy scenarios from the expert split.
-
-    Default ``repeat=None`` loops forever (SAC expert stream). ``repeat=1`` yields
-    each scenario in the split exactly once then stops.
-    """
-    if distributed is None:
-        distributed = repeat is None
-    config = waymax_config.DatasetConfig(
-        path=expert_path,
-        max_num_objects=max_num_objects,
-        include_sdc_paths=True,
-        batch_dims=(int(batch_size),),
-        shuffle_seed=seed,
-        repeat=repeat,
-        distributed=distributed,
-        drop_remainder=False if repeat == 1 else True,
-        data_format=waymax_config.DataFormat.TFRECORD,
-    )
-    gen = dataloader.simulator_state_generator(config)
-    while True:
-        try:
-            host = _to_host_pytree(next(gen))
-        except StopIteration:
-            return
-        for scen in _iter_unbatched_scenarios(host):
-            yield scen
-
-
 # --------------------------------------------------------------------------- #
 # Mixed scenario source for SAC (expert stream + cached failures)
 # --------------------------------------------------------------------------- #
@@ -239,31 +183,7 @@ class MixedWaymaxGymEnv(WaymaxGymEnv):
         scen_np = _ensure_unbatched_scenario(
             _to_host_pytree(self._source.sample_scenario(self._np_rng))
         )
-        scen = jax.tree_util.tree_map(jnp.asarray, scen_np)
-        self._state = self._jit_reset(scen)
-        self._goal_xy = jnp.asarray(_compute_goal_xy(scen_np), dtype=jnp.float32)
-
-        from rl.waymax_env import _compute_route, _project_to_route
-
-        self._route_xy, self._route_s = _compute_route(scen_np)
-
-        obs, goal_dist, ego_xy = self._jit_obs(self._state, self._goal_xy)
-        self._prev_dist = float(goal_dist)
-        self._prev_s, init_lateral = _project_to_route(
-            np.asarray(ego_xy), self._route_xy, self._route_s
-        )
-        self._step_count = 0
-
-        num_timesteps = int(np.asarray(scen_np.log_trajectory.x).shape[-1])
-        init_steps = self._env.config.init_steps
-        self._max_steps = min(self._max_episode_steps_cap, num_timesteps - init_steps)
-
-        info = {
-            "goal_dist": self._prev_dist,
-            "lateral_deviation_m": float(init_lateral),
-            "scenario": {},
-        }
-        return np.asarray(obs, dtype=np.float32), info
+        return self._reset_from_scenario(scen_np, spec_dict={})
 
 
 # --------------------------------------------------------------------------- #
@@ -496,7 +416,11 @@ def bc_dataset_meta(
         # v2 adds obs_dim: the observation layout gained agent size/type,
         # roadgraph direction and traffic-light blocks (rl/obs_layout.py), so
         # caches built against the old flat layout must not be reused.
-        "version": 2,
+        # v3 changes what those columns *mean* at the same width: path_target is
+        # now sampled ahead of the nearest path point rather than from absolute
+        # indices, and the traffic-light one-hot drops UNKNOWN instead of shifting
+        # every state by a channel. obs_dim cannot catch either, hence the bump.
+        "version": 3,
         "obs_dim": observation_dim(),
         "expert_path": expert_path,
         "excluded_shards": sorted(int(s) for s in exclude_shards),
