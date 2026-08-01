@@ -435,6 +435,8 @@ def make_bank_scenarios(
     include_sdc_paths: bool,
     num_records: int,
     chunk_size: int | None = None,
+    num_paths: int | None = None,
+    num_points_per_path: int | None = None,
 ):
     """Deterministic, file-order pass over ``path``.
 
@@ -454,6 +456,8 @@ def make_bank_scenarios(
         seed=None,  # never shuffle: index identity depends on file order
         batch_dims=(chunk,),
         repeat=None,
+        num_paths=num_paths,
+        num_points_per_path=num_points_per_path,
     )
     n_chunks = math.ceil(num_records / chunk)
     for k in range(n_chunks):

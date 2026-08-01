@@ -1,0 +1,193 @@
+hydra:
+  run:
+    dir: ${output_dir:${algorithm.name}, ${observation_type}, ${network.encoder}, ${name_run}, ${name_exp}}
+
+defaults:
+  - _self_
+  - algorithm: ???
+  - network: base
+  - override hydra/job_logging: custom
+
+# Flags config
+debug_flag: false
+perf_flag: false
+cache_flag: false
+
+# Run config
+total_timesteps: 20_000_000
+num_envs: 16
+num_episode_per_epoch: 4
+num_scenario_per_eval: 256
+scenario_length: 80
+log_freq: 5
+save_freq: 200
+eval_freq: 0
+seed: 0
+name_run: null
+name_exp: null
+
+# Weights & Biases (opt-in; training still uses TensorBoard when wandb=false)
+wandb: false
+wandb_project: vmax-womd
+wandb_entity: null
+wandb_name: null
+wandb_group: null
+wandb_mode: online
+
+# Env config
+path_dataset: ???
+path_dataset_eval: null
+# Optional second eval set logged under `eval_failures/*` alongside `path_dataset_eval`
+# (SAC only). E.g. point this at a failure-case ScenarioMax tfrecord for joint
+# validation while training/overfitting on it.
+path_dataset_eval_failures: null
+waymo_dataset: false
+max_num_objects: 64
+# Shape of the SDC route tensor in `path_dataset`. null = the ScenarioMax layout
+# (vmax.simulator.constants, 10 x 300), which is what every repro run uses.
+# Raw WOMD 1.3.1 tf_example ships its curated routes at 45 x 800 and fails to
+# load without these; see ~/slurm/waymax/vmax_womd_raw_sac.sh.
+num_sdc_paths: null
+num_points_per_sdc_path: null
+termination_keys: [offroad, overlap, run_red_light]
+
+# Warm-start SAC params (policy/value/target_value) from a prior run's checkpoint
+# .pkl (as saved by train_utils.save_params). Network config must match the
+# checkpoint's shapes. SAC only; ignored by other algorithms.
+init_checkpoint: null
+
+# Anchor the policy to a frozen reference with a KL(pi || pi_ref) penalty in the
+# actor loss. Nothing in SAC's own objective keeps a warm-started policy near the
+# pretrained driver; on a small overfit set it will happily drift into whatever
+# reaches the goal. Raise kl_coef to keep harvested rollouts recognisable as the
+# reference's driving, lower it to give the policy room to fix the failure.
+# 0 disables the anchor entirely (default; no behaviour change, no extra compute).
+# kl_reference_checkpoint defaults to init_checkpoint. SAC only.
+kl_coef: 0.0
+kl_reference_checkpoint: null
+
+# Clean-rollout banking. Set bank_num_scenarios to the record count of the dataset
+# being harvested (e.g. 218 for ScenarioMaxWaymoFailures/failures.tfrecord) to save
+# each scenario's trajectory the first time it comes out clean, rather than waiting
+# for every scenario to be clean at the same checkpoint. Runs at eval_freq.
+# Progress is bank/frac_banked (monotone) -- NOT the clean rate, which can drop.
+# bank_dataset defaults to path_dataset_eval_failures, bank_dir to <run>/bank.
+# null disables banking entirely. SAC only.
+bank_num_scenarios: null
+bank_dataset: null
+bank_dir: null
+bank_chunk_size: null
+# Smoothness gate on what gets banked: a rollout whose peak RAW yaw rate (rad/s) exceeds
+# this is not distilled, even when it solved the scene. null -> rl.bank.MAX_YAW_RATE_RAD_S
+# (0.95, V-Max's own comfort limit; the human log never exceeds 1.09 on the failure set).
+# The current policy's median peak is ~3.07, so the default refuses most of the harvest
+# until `reward_config.yaw_rate_penalty` has trained it out -- set `.inf` to harvest
+# ungated meanwhile. Truncation at the goal always applies and is not gated by this.
+bank_max_yaw_rate: null
+
+# Reward config
+reward_type: linear
+reward_config:
+  overlap: -1.0
+  offroad: -1.0
+  red_light: -1.0
+  off_route: -0.6
+  progression: 0.2
+  # Goal-reaching bonus. `reached_goal_once` pays out a single large bonus the
+  # first time the SDC reaches its destination (cannot be farmed by camping).
+  # For a dense "reach and stay" variant, use `reached_goal` instead.
+  #
+  # NOTE: the bonus lands at ~step 80, so with discount 0.99 it is worth 0.99^80 ~= 0.45
+  # of its face value at the start of the episode, against ~16 of accumulated progression
+  # (0.2 x 80) -- a small, noisy minority of the return. ~20.0 plus `goal_shaping` below
+  # is the recommended setting; see ~/slurm/waymax/vmax_repro_sac_goal_fix.sh.
+  reached_goal_once: 5.0
+
+# Potential-based goal shaping (Ng, Harada & Russell, 1999).
+#
+#   F(s, s') = coef * (discount * Phi(s') - Phi(s)),  Phi(s) = -distance_to_goal
+#
+# The discounted shaping telescopes over an episode to `discount^T * Phi(s_T) - Phi(s_0)`,
+# which depends only on where the episode started and ended -- never on the route taken.
+# That makes it provably policy-invariant: unlike the `goal_progress` reward it cannot be
+# farmed by cutting a corner off-road, so `coef` can be raised to speed up credit
+# assignment without distorting the safety trade-off. It densifies the sparse
+# `reached_goal_once` bonus rather than replacing it; keep both.
+#
+# NOTE: `discount` must match `algorithm.discount` or the telescoping (and with it the
+# policy-invariance guarantee) breaks.
+#
+# Defaults to OFF so that the existing repro scripts keep reproducing. Turn it on
+# explicitly (see ~/slurm/waymax/vmax_repro_sac_goal_fix.sh), not by editing this default.
+goal_shaping:
+  coef: 0.0  # 0.0 disables shaping entirely; 1.0 is the recommended setting
+  # `oc.select` (not a plain ${algorithm.discount}) because BC has no discount key -- it
+  # does not bootstrap -- and a hard interpolation would make every BC run fail to compose.
+  # The fallback is unused in practice: BC ignores the reward, so it never shapes.
+  discount: ${oc.select:algorithm.discount,0.99}
+  normalize: true  # Phi = -d(s) / d(s_0): scale-free across short and long scenarios
+
+# Observation config
+observation_type: vec
+observation_config:
+  obs_past_num_steps: 5
+  objects:
+    features:
+      - waypoints
+      - velocity
+      - yaw
+      - size
+      - valid
+    num_closest_objects: 8
+  roadgraphs:
+    features:
+      - waypoints
+      - direction
+      # - types
+      - valid
+    element_types: [15, 16]
+    interval: 2
+    max_meters: 70
+    roadgraph_top_k: 200
+    meters_box:
+      front: 70
+      back: 5
+      left: 20
+      right: 20
+    max_num_lanes: 10
+    max_num_points_per_lane: 20
+  traffic_lights:
+    features:
+      - waypoints
+      - state
+      - valid
+    num_closest_traffic_lights: 5
+  path_target:
+    features:
+      - waypoints
+    num_points: 3
+    points_gap: 12
+  # Goal features. `path_target` only says where the road goes next (3 points ~6/12/18 m
+  # ahead); it carries no information about where the trip ends or how much time is left.
+  # But `reached_goal` scores the SDC on arriving within a radius of the expert's final
+  # logged position before the horizon runs out -- so without these features the policy
+  # is judged on state it cannot observe, and no reward shaping can fix that.
+  #
+  # Defaults to EMPTY (the original goal-blind observation) because enabling it changes
+  # the observation size, which would silently break the repro scripts and any warm start
+  # from an existing checkpoint. Turn it on explicitly with the full feature list:
+  #
+  #   observation_config.goal.features=[xy,distance,heading,time_remaining,required_speed,speed_ratio]
+  #
+  # See ~/slurm/waymax/vmax_repro_sac_goal_fix.sh. Available features:
+  #   xy              goal position in the ego frame           (2)
+  #   distance        how far the goal still is                (1)
+  #   heading         bearing to the goal, as (cos, sin)       (2)
+  #   time_remaining  how long is left to get there            (1)
+  #   required_speed  distance / time_remaining -- the sufficient statistic for the task (1)
+  #   speed_ratio     current speed / required speed; <1 means falling behind schedule   (1)
+  goal:
+    features: []
+    max_speed: 30.0  # normalizer for required_speed (m/s)
+    max_time: 8.0  # normalizer for time_remaining (s)
+    dt: 0.1  # simulation timestep (s)

@@ -1,0 +1,55 @@
+V-Max — vendored source
+=======================
+
+Upstream:  https://github.com/valeoai/V-Max/
+Base commit: b50f01f0c580e47214dbe6ee432d69d5ba2304da
+             2025-05-19 10:31:04 +0200
+             "Merge pull request #16 from valeoai/staging"
+Vendored:  2026-08-01
+
+Why vendored
+------------
+This tree carried 43 modified files of local work that had never been committed
+anywhere — the JAX-0.10 compatibility shim, the per-env SDC-index fix in
+`expert_step`, goal shaping, clean-rollout banking, the reward extensions, and
+the raw-WOMD route dimensions. It lived in a nested clone whose only remote was
+upstream valeoai/V-Max, so none of it was backed up and none of it was visible
+to the rest of this repo's history. It is now tracked here directly.
+
+The nested `.git` (upstream history, 24M) was moved aside rather than deleted:
+
+    /zfsauton/scratch/yixiz/vmax_upstream_git_backup.git
+
+Restore it with `mv` if you ever need to diff against upstream or rebase onto a
+newer V-Max release.
+
+What was vendored
+-----------------
+Exactly the 131 files upstream tracked at b50f01f (`git ls-files`), with the
+local modifications applied. Deliberately NOT vendored — training artifacts that
+lived in the same tree:
+
+    runs/        129M  stale checkpoints + wandb logs. NOTE: rl/CONTEXT.md warns
+                       these are an older, different set from the live runs; the
+                       live tree is /zfsauton/scratch/yixiz/waymax_rs/vmax_repro.
+    val_full/     40M  evaluation output
+    vmax_smoke/   11M  smoke-test output
+    slurm-*.out        job logs
+
+Local modifications vs upstream
+-------------------------------
+See `git log` on this repo. The substantive ones, roughly in dependency order:
+
+  * vmax/agents/pipeline/pmap.py, compat shims — JAX 0.10 removed
+    `jax.device_put_replicated`, which V-Max targets `jax<0.6` for.
+  * vmax/agents/pipeline/inference.py — `expert_step` selected the SDC action
+    with a single global argmax over the whole flattened batch. Correct only
+    when every scenario stores the SDC at the same object slot (true for
+    ScenarioMax, false for raw WOMD). Now per-env.
+  * vmax/simulator/wrappers/reward.py — goal shaping, yaw-rate penalty,
+    offroad margin, overspeed.
+  * vmax/agents/learning/reinforcement/sac/* — `init_checkpoint` warm start,
+    KL anchor to a reference policy, joint `eval_failures` set.
+  * vmax/simulator/sim_factory.py + constants.py + config/base_config.yaml —
+    SDC route tensor dimensions are configurable, so raw WOMD tf_example
+    (45 x 800) loads alongside ScenarioMax (10 x 300).

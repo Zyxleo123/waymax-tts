@@ -1,0 +1,7 @@
+# Build
+*.pyc
+*.egg-info
+
+# Local data
+mini_datasets/
+

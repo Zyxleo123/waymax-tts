@@ -815,3 +815,69 @@ separates "richer observation" from "better encoder".
 - Known gaps vs V-Max: no `run_red_light` metric; SB3 SAC uses separate feature
   extractors for actor and critic (`share_features_extractor=False`), so the
   encoder runs twice per update — first knob if throughput disappoints.
+
+---
+
+# Two ways in, from both ends (2026-08-01)
+
+Porting V-Max *into* the SB3 path (`rl/train_sac.py`) has not produced a number yet,
+so the same gap is now attacked from the other side as well: teach **V-Max** to read
+**raw WOMD**, so the ScenarioMax conversion can be dropped without also dropping
+V-Max. Both changes are purely additive — every existing repro script and launcher
+composes to exactly the same config as before.
+
+## A. Overfit the SB3 stack (`OVERFIT=1` on `~/slurm/waymax/sac_waymax.sh`)
+
+The V-Max-parity port (1967-dim obs, `lq` encoder) has only ever been unit-tested.
+Before spending a full run on it, ask the only question that matters: **can it fit
+anything at all?** `OVERFIT=1` trains on a handful of failure scenarios with
+train == eval. If `eval/clean_success_rate` does not approach 1.0 on 4 scenarios,
+the defect is in the env / observation / reward, not the budget.
+
+```bash
+OVERFIT=1 SMOKE=1 bash ~/slurm/waymax/sac_waymax.sh   # wiring check first
+OVERFIT=1 bash ~/slurm/waymax/sac_waymax.sh           # 4 scenarios, 300k steps
+OVERFIT=1 LIMIT=1 bash ~/slurm/waymax/sac_waymax.sh   # one scenario
+OVERFIT=1 ENCODER=mlp bash ~/slurm/waymax/sac_waymax.sh
+```
+
+Deviations from the parity defaults, all for the fit test: `learning_starts` 50k→1k,
+`lr` 1e-4→3e-4, `ent_coef` 0.2→`auto`, `n_envs` 16→4. The scenario count is in the
+save dir (`..._n4`) so n=1 and n=4 never resume off each other.
+
+## B. V-Max on raw WOMD (`~/slurm/waymax/vmax_womd_raw_sac.sh`)
+
+`make_data_generator` hardcoded the SDC route tensor at the **ScenarioMax layout
+(10 paths x 300 points)**. WOMD 1.3.1 ships its own curated routes at **45 x 800**,
+so the Waymax dataloader's reshape failed and the only escape was
+`waymo_dataset=true` — which discards the real routes and regenerates an
+approximate single path with the `SDCPathWrapper` heuristic. That is a train/eval
+discrepancy in `progression`, `off_route`, `path_target` and the red-light metric,
+all of which are defined against the route.
+
+New config keys, **both `null` by default = the ScenarioMax layout**:
+
+| key | file |
+|---|---|
+| `num_sdc_paths` / `num_points_per_sdc_path` | `vmax/config/base_config.yaml` |
+| `num_paths` / `num_points_per_path` kwargs | `vmax/simulator/sim_factory.py::make_data_generator` |
+| `constants.WOMD_NUM_SDC_PATHS` = 45, `WOMD_NUM_POINTS_PER_SDC_PATH` = 800 | `vmax/simulator/constants.py` |
+| threaded to train / eval / eval_failures generators + the banker | `train.py`, `train_utils.py`, `rl/bank.py` |
+| `--num_sdc_paths` / `--num_points_per_sdc_path` | `vmax/scripts/evaluate/evaluate.py` |
+
+`waymo_dataset=false` stays set, so the real routes are used rather than regenerated.
+
+```bash
+sbatch ~/slurm/waymax/vmax_womd_raw_check.sbatch     # CPU: does the data load?
+SMOKE=1 bash ~/slurm/waymax/vmax_womd_raw_sac.sh     # 10 iters end to end
+bash ~/slurm/waymax/vmax_womd_raw_sac.sh             # 25M steps
+```
+
+⚠️ Raw WOMD does **not** put the SDC at a fixed object slot (ScenarioMax does).
+Anything resolving it with a single global argmax over the batch is wrong on this
+data — that was the `expert_step` bug (see the 2026-06-19 RESOLUTION above), so
+re-read that section before adding any batched SDC lookup on this path.
+
+## Status
+- ✅ Hydra composes; `env_config` carries 45/800; `make_data_generator` signature verified.
+- ⏳ Not yet run: the CPU load check, the WOMD smoke, the SB3 overfit.

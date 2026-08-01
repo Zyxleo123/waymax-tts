@@ -1,0 +1,35 @@
+defaults:
+  - /network/base
+  - _self_
+
+name: SAC
+unroll_length: 1
+learning_rate: 3e-4
+discount: 0.99
+tau: 0.005
+# Entropy coefficient. With `auto_alpha: false` (the default, preserving the original
+# behavior) this is held fixed for the whole run, so the policy keeps injecting the same
+# action noise however confident it becomes; over an 80-step episode that noise costs
+# displacement, which is precisely what goal-reaching charges for. `auto_alpha: true`
+# tunes it against `target_entropy` instead, letting exploration decay as the policy
+# sharpens -- recommended, and then `alpha` is only the initial value.
+alpha: 0.2
+auto_alpha: false
+target_entropy: null  # null -> -action_size (the usual default; -2 for accel + steering)
+batch_size: 64
+grad_updates_per_step: 4
+buffer_size: 100_000
+learning_start: 100
+
+network:
+  policy:
+    layer_sizes: [256, 256]
+    activation: relu  # gelu, relu, selu
+    final_activation: null
+
+  value:
+    layer_sizes: [256, 256]
+    activation: relu  # gelu, relu, selu
+    final_activation: relu  # tanh, relu
+    num_networks: 2
+    shared_encoder: false

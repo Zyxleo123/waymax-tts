@@ -56,3 +56,11 @@ old/
 
 waymo-open-dataset/
 .DS_Store
+
+# Vendored V-Max: source only. These are training artifacts that live in the
+# same tree (and V-Max/runs is a STALE set -- the live runs are under
+# /zfsauton/scratch/yixiz/waymax_rs/vmax_repro). See V-Max/VENDOR_PROVENANCE.txt.
+V-Max/runs/
+V-Max/val_full/
+V-Max/vmax_smoke/
+V-Max/slurm-*.out
