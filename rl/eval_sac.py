@@ -88,6 +88,7 @@ def main():
         lateral_penalty=args.r_lateral_penalty,
         off_route_threshold_m=args.off_route_threshold_m,
         off_route_penalty=args.r_off_route,
+        progression_indicator=args.progression_indicator,
     )
     env = WaymaxGymEnv(
         source,
@@ -246,6 +247,10 @@ def _parse_args():
                         "per-meter lateral penalty.")
     p.add_argument("--r-off-route", type=float, default=-0.2,
                    help="Per-step off-route penalty (V-Max reward_config.off_route).")
+    p.add_argument("--progression-indicator", action="store_true",
+                   help="Make the route progression term V-Max's bounded indicator: "
+                        "award --r-progress on any step where route arclength "
+                        "increased, instead of --r-progress per meter advanced.")
     p.add_argument("--reactive-agents", action=argparse.BooleanOptionalAction,
                    default=False,
                    help="Use IDM sim agents for non-ego objects instead of log replay. "

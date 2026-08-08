@@ -1,0 +1,78 @@
+% ==================================================================
+% July 29 update. Frames only; preamble lives in main.tex.
+% ==================================================================
+
+% ##################################################################
+\section{ES init-bank diagnosis: diffusion vs.\ SAC}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Diagnosis: initialization is bimodal, not gradually deficient}
+  \small
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    \centering
+    \begin{tabular}{@{}lrr@{}}
+      \toprule
+      safe in kept 64 & replans & share \\
+      \midrule
+      0     & 157 & \textbf{54.5\%} \\
+      1--4  &   3 & 1.0\% \\
+      33--63&   2 & 0.7\% \\
+      64    & 126 & \textbf{43.8\%} \\
+      \bottomrule
+    \end{tabular}
+
+    \vspace{0.5em}
+    288 replans; mean $28.4$, median \textbf{0}.
+
+    \column{0.54\textwidth}
+    \begin{itemize}
+      \item If the 256-candidate bank contains safes, down-selection keeps
+            \textbf{62.5/64 safe} on average; otherwise it keeps
+            \textbf{0/64}.
+      \item Therefore the main deficiency is a \textbf{replan-level coverage
+            collapse}: the proposal bank usually supplies either hundreds of
+            safe options or none.
+      \item A zero-safe replan raises risk but is not deterministically fatal:
+            \textbf{13/22 successes} recovered after at least one.
+      \item Both no-goal failures always had safes:
+            \textbf{insufficient progress is a separate mode}.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{SAC init closes the coverage collapse}
+  \small
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    \centering
+    \begin{tabular}{@{}lrr@{}}
+      \toprule
+      safe in kept 64 & scenes & share \\
+      \midrule
+      0   &  2 & \textbf{6.9\%} \\
+      64  & 27 & \textbf{93.1\%} \\
+      \bottomrule
+    \end{tabular}
+
+    \vspace{0.5em}
+    29 ES scenes, $K{=}64$ stochastic SAC seeds each; mean \textbf{59.6}/64 safe.
+
+    \column{0.54\textwidth}
+    \begin{itemize}
+      \item Same bimodal shape, but the \textbf{0-safe mass collapses}:
+            \textbf{54.5\% $\to$ 6.9\%} of instances.
+      \item Diffusion has to \emph{sample into} a safe mode each draw;
+            the offline SAC bank is safe \textbf{by construction} from a
+            closed-loop rollout, so coverage no longer depends on that draw.
+      \item The 2 remaining 0/64 scenes are not unlucky sampling ---
+            \textbf{all 64 seeds fail identically} (one pure overlap, one
+            pure offroad): genuinely hard scenes, not a coverage gap.
+      \item Caveat: this is per-\textbf{scene} (closed-loop from $t{=}0$),
+            not per-\textbf{replan} like the diffusion table --- directionally
+            comparable, not the same denominator.
+    \end{itemize}
+  \end{columns}
+\end{frame}

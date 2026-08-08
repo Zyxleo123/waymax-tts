@@ -33,6 +33,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from glob import glob
 from pathlib import Path
 
 # --- GPU memory hygiene: must run before TF/JAX touch the device ------------
@@ -68,6 +69,7 @@ from experiments.es_instrumented import (
 )
 from experiments.dense_scorer import DenseConfig, DenseWeights
 from experiments.sac_bank import load_sac_init_bank
+from experiments.sac_online import OnlineSacInit
 from experiments.wandb_log import WandbLogger
 
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -98,9 +100,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--init_bank_multiplier", type=int, default=1,
                    help="oversample factor for the diffusion bank (e.g. 4 -> sample 4K, keep K)")
     p.add_argument("--sac_bank_path", default=None,
-                   help="scratch NPZ from dump_sac_init_bank.py (required for sac*)")
+                   help="scratch NPZ from dump_sac_init_bank.py (offline sac* init)")
     p.add_argument("--sac_manifest", default=None,
-                   help="es_scenes_manifest.json (required for sac*)")
+                   help="es_scenes_manifest.json (offline sac* init)")
+    # --- online SAC init: roll the policy at every replan instead of once offline ---
+    p.add_argument("--sac_online", action="store_true", default=False,
+                   help="sac*: roll K SAC episodes from the live ego state at each "
+                        "replan (needs --sac_run_dir) instead of re-slicing an offline "
+                        "bank. Mutually exclusive with --sac_bank_path.")
+    p.add_argument("--sac_run_dir", default=None,
+                   help="V-Max training run dir with .hydra/config.yaml + model/ "
+                        "(required for --sac_online)")
+    p.add_argument("--sac_model", default=None,
+                   help="explicit checkpoint .pkl; defaults to <run_dir>/model/model_best.pkl. "
+                        "V-Max's own picker takes the highest-numbered file, which is not "
+                        "necessarily the best one.")
+    p.add_argument("--sac_k", type=int, default=None,
+                   help="online rollouts per scene per replan (default: population_size)")
+    p.add_argument("--sac_rollout_steps", type=int, default=50,
+                   help="online rollout length in sim steps (0.1 s each); 50 = 5 s, "
+                        "which covers the ES predict horizon (25 x 0.2 s)")
+    p.add_argument("--sac_deterministic", action="store_true", default=False,
+                   help="use the policy mode instead of sampling — all K rollouts "
+                        "become identical, so only useful as a control")
+    p.add_argument("--sac_action_noise", type=float, default=0.0,
+                   help="extra Gaussian noise on the (normalized) actions, for when the "
+                        "policy's own entropy is too low to give a diverse population")
     p.add_argument("--tf_shard", default=None,
                    help="WOMD shard id e.g. 00000 (auto-inferred from tfrecord_dir if omitted)")
     p.add_argument("--seed", type=int, default=0)
@@ -163,6 +188,8 @@ def main() -> None:
                    f"_m{args.init_bank_multiplier}_f{args.sac_frac:g}")
         else:
             arm = f"{args.selection}_{args.init_select}_m{args.init_bank_multiplier}"
+        if args.init_select in SAC_INIT_CHOICES and args.sac_online:
+            arm += "_online"
     exp_name = f"es_{arm}"
     if args.tag:
         exp_name += f"_{args.tag}"
@@ -171,11 +198,41 @@ def main() -> None:
     args.arm = arm
 
     sac_bank = None
+    online_sac = None
     tf_shard = _infer_tf_shard(args.tfrecord_dir, args.tf_shard)
-    if args.init_select in SAC_INIT_CHOICES:
+    if args.init_select in SAC_INIT_CHOICES and args.sac_online:
+        if args.sac_bank_path:
+            raise SystemExit("--sac_online replaces the offline bank; drop --sac_bank_path")
+        if not args.sac_run_dir:
+            raise SystemExit("--sac_run_dir required for --sac_online")
+        tfrecords = sorted(glob(os.path.join(args.tfrecord_dir, "*")))
+        if not tfrecords:
+            raise SystemExit(f"no tfrecord under {args.tfrecord_dir}")
+        if len(tfrecords) > 1:
+            # scenario indices are per-tfrecord; the runner walks the dir in sorted
+            # order, so a multi-shard dir would silently index the wrong scenes.
+            raise SystemExit(
+                f"--sac_online expects one tfrecord per run, found {len(tfrecords)} "
+                f"in {args.tfrecord_dir}")
+        online_sac = OnlineSacInit(
+            run_dir=args.sac_run_dir,
+            tfrecord_path=tfrecords[0],
+            model_path=args.sac_model,
+            k=int(args.sac_k or args.population_size),
+            rollout_steps=args.sac_rollout_steps,
+            deterministic=args.sac_deterministic,
+            action_noise_std=args.sac_action_noise,
+        )
+        print(f"[sac_online] {online_sac.model_path} k={online_sac.k} "
+              f"steps={online_sac.rollout_steps} "
+              f"deterministic={online_sac.deterministic} "
+              f"action_noise={online_sac.action_noise_std} "
+              f"max_num_objects={online_sac.max_num_objects}")
+    elif args.init_select in SAC_INIT_CHOICES:
         if not args.sac_bank_path or not args.sac_manifest:
             raise SystemExit(
-                f"--sac_bank_path and --sac_manifest required for {args.init_select}")
+                f"--sac_bank_path and --sac_manifest required for {args.init_select} "
+                f"(or pass --sac_online --sac_run_dir ... for online rollouts)")
         if tf_shard is None:
             raise SystemExit("Could not infer --tf_shard from tfrecord_dir; pass explicitly")
         sac_bank = load_sac_init_bank(args.sac_bank_path, args.sac_manifest)
@@ -215,6 +272,7 @@ def main() -> None:
         init_bank_multiplier=args.init_bank_multiplier,
         init_select=args.init_select,
         sac_bank=sac_bank,
+        online_sac=online_sac,
         sac_frac=args.sac_frac,
         tf_shard=tf_shard)
 

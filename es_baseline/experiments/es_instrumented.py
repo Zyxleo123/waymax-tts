@@ -10,8 +10,11 @@ unchanged. The ONLY things it changes are:
   * ``init_select`` / ``init_bank_multiplier``: Stage-2 diversified initialization.
         Sample an oversized diffusion bank, then down-select to ``population_size``
         via farthest-point sampling on behavior descriptors (optionally safe-aware).
-  * ``init_select`` ``sac`` / ``sac_safe``: Stage-3 offline SAC traj bank as init
-        (mutation still diffusion). Requires ``sac_bank`` + batch scenario indices.
+  * ``init_select`` ``sac`` / ``sac_safe``: Stage-3 SAC traj bank as init
+        (mutation still diffusion). Requires batch scenario indices plus either an
+        offline ``sac_bank`` (rolled once per scene, before the search) or an
+        ``online_sac`` roller (K fresh rollouts from the live ego state at every
+        replan). See ``experiments/sac_online.py`` for why online differs.
   * per-(world, replan-step) instrumentation logged to ``self.diagnostics``.
 
 Keeping selection/mutation identical across modes is exactly the paired-seed
@@ -38,6 +41,7 @@ from experiments.descriptors import (
 from experiments.sac_bank import (
     SacInitBank, sac_slice_to_ego_norm, select_sac_population,
 )
+from simulation.planning_utils import sim_state_to_ego_trajectory
 
 
 # ``diverse_sac*`` mixes both banks (SAC augments diffusion); ``sac*`` replaces
@@ -53,6 +57,7 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                  init_bank_multiplier: int = 1,
                  init_select: str = "none",
                  sac_bank: Optional[SacInitBank] = None,
+                 online_sac: Optional[Any] = None,
                  tf_shard: Optional[str] = None,
                  sac_frac: float = 0.5,
                  **kwargs):
@@ -70,6 +75,9 @@ class InstrumentedESPlanner(DiffusionESPlanner):
         self.init_bank_multiplier = max(1, int(init_bank_multiplier))
         self.init_select = init_select
         self.sac_bank = sac_bank
+        self.online_sac = online_sac
+        if sac_bank is not None and online_sac is not None:
+            raise ValueError("pass either sac_bank (offline) or online_sac, not both")
         self.sac_frac = float(sac_frac)
         self.tf_shard = tf_shard  # e.g. "00000"; set per-tfrecord by runner/driver
         # Filled by simulation.runner before each batch:
@@ -78,8 +86,9 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 and self.init_bank_multiplier < 2):
             # diversity over a size-K bank is a no-op; force at least 2x
             self.init_bank_multiplier = 2
-        if self.init_select in SAC_INIT_CHOICES and self.sac_bank is None:
-            raise ValueError(f"init_select {self.init_select} requires sac_bank=")
+        if self.init_select in SAC_INIT_CHOICES and self.sac_bank is None and self.online_sac is None:
+            raise ValueError(
+                f"init_select {self.init_select} requires sac_bank= or online_sac=")
         self.diagnostics: List[dict] = []
 
     # ---- scoring helpers ----------------------------------------------------
@@ -211,19 +220,52 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 jnp.asarray(np.stack(sel_world)),
                 world_t_seconds_bt, world_t_valid_bt, meta, rng)
 
-    # ---- Stage-3 SAC offline-bank initialization ----------------------------
+    # ---- Stage-3 SAC bank initialization (offline bank or online rollouts) --
     def _require_sac_bank(self) -> None:
-        if self.sac_bank is None:
-            raise RuntimeError("sac_bank not set")
+        if self.sac_bank is None and self.online_sac is None:
+            raise RuntimeError("neither sac_bank nor online_sac is set")
         if not self.batch_scenario_indices:
             raise RuntimeError(
                 "batch_scenario_indices not set — runner must assign them before plan")
-        if self.tf_shard is None:
+        if self.sac_bank is not None and self.tf_shard is None:
             raise RuntimeError("tf_shard not set on planner (e.g. '00000')")
         if len(self.batch_scenario_indices) < int(self.num_worlds):
             raise RuntimeError(
                 f"batch_scenario_indices has {len(self.batch_scenario_indices)} entries "
                 f"< num_worlds={self.num_worlds}")
+        if self.online_sac is not None:
+            # One tfrecord scan for the whole batch instead of one per scene.
+            self.online_sac.prepare(self.batch_scenario_indices[: int(self.num_worlds)])
+
+    def _ego_history_bt5(self, sim_state) -> Optional[np.ndarray]:
+        """Executed ego trajectory per world, or None when no online roller needs it.
+
+        ES keeps the executed ego in ``log_trajectory`` (each accepted plan is written
+        back there), so steps 0..t of this array are what the ego actually did.
+        """
+        if self.online_sac is None:
+            return None
+        return np.asarray(sim_state_to_ego_trajectory(sim_state))
+
+    def _sac_rows(self, *, world_idx: int, ego_hist_bt5, timestep: int, rng):
+        """SAC candidates for one world: ``(traj [Ks,T,5], safe, length, t0, dt)``.
+
+        ``t0`` is the scenario step that trajectory index 0 corresponds to. Offline it
+        is the env's own reset step, fixed for the whole episode; online it is the
+        current replan step, because the rollouts start from the live ego pose.
+        """
+        scen_idx = int(self.batch_scenario_indices[world_idx])
+        if self.online_sac is not None:
+            traj, safe, length = self.online_sac.rollout(
+                scenario_index=scen_idx,
+                ego_history_t5=ego_hist_bt5[world_idx],
+                timestep=int(timestep),
+                rng=rng,
+            )
+            return traj, safe, length, int(timestep), float(self.online_sac.dt)
+        traj, safe, length = self.sac_bank.get(self.tf_shard, scen_idx)
+        return (traj, safe, length,
+                int(self.sac_bank.start_timestep), float(self.sac_bank.dt))
 
     def _sample_and_downselect_sac(
         self, *, pre_batch, sim_state, timestep, goal_b2, rng,
@@ -238,6 +280,7 @@ class InstrumentedESPlanner(DiffusionESPlanner):
         origin_xy = np.asarray(pre_batch.aux["origin_xy"])
         anchor_yaw = np.asarray(pre_batch.aux["anchor_yaw"])
 
+        ego_hist_bt5 = self._ego_history_bt5(sim_state)
         sel_norm = []
         meta = []
         for w in range(B):
@@ -245,8 +288,9 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 raise RuntimeError(
                     f"world {w} >= len(batch_scenario_indices)="
                     f"{len(self.batch_scenario_indices)}")
-            scen_idx = int(self.batch_scenario_indices[w])
-            traj_kt5, safe_k, len_k = self.sac_bank.get(self.tf_shard, scen_idx)
+            rng, key_roll = jax.random.split(rng)
+            traj_kt5, safe_k, len_k, t0, bank_dt = self._sac_rows(
+                world_idx=w, ego_hist_bt5=ego_hist_bt5, timestep=timestep, rng=key_roll)
             traj_sel, _safe_sel, len_sel, m = select_sac_population(
                 traj_kt5, safe_k, len_k,
                 population_size=K,
@@ -261,12 +305,12 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 model_dt=float(cfg.model_dt),
                 ego_range=float(cfg.ego_range),
                 max_velocity=float(cfg.max_velocity),
-                bank_dt=float(self.sac_bank.dt),
-                bank_start_timestep=int(self.sac_bank.start_timestep),
+                bank_dt=bank_dt,
+                bank_start_timestep=t0,
             )
             sel_norm.append(norm_ktd)
-            m.update(self._sac_scene_stats(traj_kt5, len_k, origin_xy[w], timestep,
-                                  int(self.sac_bank.start_timestep)))
+            m.update(self._sac_scene_stats(traj_kt5, len_k, origin_xy[w], timestep, t0))
+            m["init_sac_online"] = self.online_sac is not None
             meta.append(m)
 
         current_norm_bktd = jnp.asarray(np.stack(sel_norm, axis=0))  # [B,K,H,5]
@@ -297,7 +341,7 @@ class InstrumentedESPlanner(DiffusionESPlanner):
             "init_sac_anchor_gap_min_m": float(np.min(gap)),
         }
 
-    def _build_sac_bank(self, *, pre_batch, sim_state, timestep):
+    def _build_sac_bank(self, *, pre_batch, sim_state, timestep, rng):
         """Convert the *whole* per-scene SAC bank to ego-norm + world + binary score.
 
         Unlike ``_sample_and_downselect_sac`` this keeps every bank member as a
@@ -309,12 +353,13 @@ class InstrumentedESPlanner(DiffusionESPlanner):
         origin_xy = np.asarray(pre_batch.aux["origin_xy"])
         anchor_yaw = np.asarray(pre_batch.aux["anchor_yaw"])
 
+        ego_hist_bt5 = self._ego_history_bt5(sim_state)
         norms, bank_safe, stats = [], [], []
         for w in range(B):
-            scen_idx = int(self.batch_scenario_indices[w])
-            traj_kt5, safe_k, len_k = self.sac_bank.get(self.tf_shard, scen_idx)
-            stats.append(self._sac_scene_stats(traj_kt5, len_k, origin_xy[w], timestep,
-                                  int(self.sac_bank.start_timestep)))
+            rng, key_roll = jax.random.split(rng)
+            traj_kt5, safe_k, len_k, t0, bank_dt = self._sac_rows(
+                world_idx=w, ego_hist_bt5=ego_hist_bt5, timestep=timestep, rng=key_roll)
+            stats.append(self._sac_scene_stats(traj_kt5, len_k, origin_xy[w], timestep, t0))
             norms.append(sac_slice_to_ego_norm(
                 traj_kt5, len_k,
                 timestep=int(timestep),
@@ -324,8 +369,8 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 model_dt=float(cfg.model_dt),
                 ego_range=float(cfg.ego_range),
                 max_velocity=float(cfg.max_velocity),
-                bank_dt=float(self.sac_bank.dt),
-                bank_start_timestep=int(self.sac_bank.start_timestep),
+                bank_dt=bank_dt,
+                bank_start_timestep=t0,
             ))
             bank_safe.append(np.asarray(safe_k).astype(bool))
 
@@ -358,8 +403,9 @@ class InstrumentedESPlanner(DiffusionESPlanner):
             cond_bf=cond_bf, inst_cond_bf=inst_cond_bf,
             instruction_mask=instruction_mask, rng=rng,
             pre_batch=pre_batch, sim_state=sim_state, timestep=timestep)
+        rng, key_sac = jax.random.split(rng)
         sac_norm, sac_world, sac_binary, sac_bank_safe, sac_stats = self._build_sac_bank(
-            pre_batch=pre_batch, sim_state=sim_state, timestep=timestep)
+            pre_batch=pre_batch, sim_state=sim_state, timestep=timestep, rng=key_sac)
 
         if dif_norm.shape[2:] != sac_norm.shape[2:]:
             raise RuntimeError(
@@ -408,6 +454,7 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 "init_selected_num_sac_safe": int(
                     (sac_binary[w][idx_sac] >= 1.0 - 1e-6).sum()),
                 "init_selected_num_diffusion": int(len(idx_dif)),
+                "init_sac_online": self.online_sac is not None,
                 **sac_stats[w],
             })
 
@@ -528,6 +575,8 @@ class InstrumentedESPlanner(DiffusionESPlanner):
                 "init_select": self.init_select,
                 "init_bank_multiplier": self.init_bank_multiplier,
                 "sac_frac": self.sac_frac if self.init_select in SAC_INIT_CHOICES else None,
+                "sac_source": (None if self.init_select not in SAC_INIT_CHOICES
+                               else ("online" if self.online_sac is not None else "offline")),
                 "init_has_safe": bool((init_binary[w] >= 1.0 - 1e-6).any()),
                 "init_num_safe": int((init_binary[w] >= 1.0 - 1e-6).sum()),
                 "init_best_binary": float(init_binary[w].max()),

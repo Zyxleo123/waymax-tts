@@ -18,6 +18,7 @@ from typing import Any
 
 import jax
 import matplotlib as mpl
+import matplotlib.patches  # noqa: F401  (mpl.patches is not imported by `import matplotlib`)
 import numpy as np
 from waymax import config as waymax_config
 from waymax import datatypes
@@ -33,6 +34,8 @@ from vmax.simulator import overrides
 # Please refer to color.py for definition and color associcated.
 _RoadGraphShown = (1, 2, 3, 15, 16, 17, 18, 19)
 _RoadGraphDefaultColor = (0.9, 0.9, 0.9)
+# Goal marker: distinct from the roadgraph grey and from the agent/SDC colors.
+_GoalColor = "#00b050"
 
 
 def _plot_bounding_boxes(
@@ -219,6 +222,71 @@ def plot_traffic_light_signals_as_points(
         ax.plot(xy[0], xy[1], marker="o", color=tl_color, ms=4)
 
 
+def _plot_sdc_goal(
+    ax: mpl.axes.Axes,
+    state: datatypes.SimulatorState,
+    goal_radius_m: float = 2.0,
+    plot_log_path: bool = True,
+) -> None:
+    """Mark the SDC's goal and the radius that counts as reaching it.
+
+    The goal is the SDC's last valid *logged* position — the same definition used by
+    ``operations.get_sdc_goal_xy``, recomputed here in numpy so the visualization does
+    not import the simulator package (and so it works on an already-unbatched state).
+    Keep the two in sync: if the goal definition moves, this marker moves with it.
+
+    Args:
+        ax: Axis to draw on.
+        state: Simulator state with no batch dimension.
+        goal_radius_m: Success radius drawn around the goal, in meters.
+        plot_log_path: If True, also draws the SDC's logged (expert) path.
+    """
+    is_sdc = np.asarray(state.object_metadata.is_sdc)
+    if not is_sdc.any():
+        return
+    sdc_idx = int(np.argmax(is_sdc))
+
+    log_xy = np.asarray(state.log_trajectory.xy[sdc_idx])  # [num_timesteps, 2]
+    log_valid = np.asarray(state.log_trajectory.valid[sdc_idx])  # [num_timesteps]
+    if not log_valid.any():
+        return
+    goal_xy = log_xy[int(np.flatnonzero(log_valid)[-1])]
+
+    if plot_log_path:
+        ax.plot(
+            log_xy[log_valid, 0],
+            log_xy[log_valid, 1],
+            color=_GoalColor,
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.45,
+            zorder=4,
+        )
+
+    ax.add_patch(
+        mpl.patches.Circle(
+            (goal_xy[0], goal_xy[1]),
+            goal_radius_m,
+            facecolor=_GoalColor,
+            edgecolor=_GoalColor,
+            alpha=0.18,
+            linewidth=1.5,
+            zorder=5,
+        ),
+    )
+    ax.plot(
+        goal_xy[0],
+        goal_xy[1],
+        marker="*",
+        markersize=11,
+        color=_GoalColor,
+        markeredgecolor="black",
+        markeredgewidth=0.5,
+        linestyle="none",
+        zorder=6,
+    )
+
+
 def plot_simulator_state(
     state: datatypes.SimulatorState,
     use_log_traj: bool = True,
@@ -226,6 +294,8 @@ def plot_simulator_state(
     batch_idx: int = -1,
     highlight_obj: waymax_config.ObjectType = waymax_config.ObjectType.SDC,
     plot_sdc_paths: bool = False,
+    plot_sdc_goal: bool = True,
+    goal_radius_m: float = 2.0,
     ax: mpl.axes.Axes | None = None,
 ) -> np.ndarray:
     """Plot the simulator state and return the result as an image.
@@ -237,6 +307,8 @@ def plot_simulator_state(
         batch_idx: Batch index to select from state.
         highlight_obj: Object type to highlight.
         plot_sdc_paths: If True, plots SDC paths.
+        plot_sdc_goal: If True, marks the SDC goal, its success radius, and the logged path.
+        goal_radius_m: Success radius drawn around the goal, in meters.
         ax: Optional Matplotlib axis; if None, one is created.
 
 
@@ -279,6 +351,11 @@ def plot_simulator_state(
         state.timestep,
         verbose=False,
     )
+
+    # 2b. Marks the SDC goal (drawn before the axis limits are fixed below, so the
+    # marker never widens the view).
+    if plot_sdc_goal:
+        _plot_sdc_goal(ax, state, goal_radius_m=goal_radius_m)
 
     # 3. Gets np img, centered on selected agent's current location.
     # [A, 2]

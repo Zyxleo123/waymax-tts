@@ -16,7 +16,19 @@ from typing import Any
 
 import jax
 from etils import epath
-from tensorboardX import SummaryWriter
+
+
+# tensorboardX is a training-only dependency, but this module is pulled in by the SAC
+# package __init__, so an eager import makes the *inference* path unavailable in
+# environments without it (the Diffusion-ES stack, which runs a V-Max policy in-process
+# for online SAC initialization). setup_tensorboard raises if it is actually needed.
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:  # pragma: no cover - depends on the environment
+
+    class SummaryWriter:  # kept a class so the type annotations below stay valid
+        def __init__(self, *args, **kwargs):
+            raise ImportError("tensorboardX is required to log training to TensorBoard")
 
 from vmax.simulator import datasets
 

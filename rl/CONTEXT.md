@@ -277,7 +277,9 @@ trained policy is **no better than doing nothing**. Adding BC (either source)
 changes the curves *not at all*. Root-caused with a series of diagnostics
 (`runs/sac_failures`, 16 failure scenarios):
 
-1. **Control loop is fine.** Obs is healthy (shape `(16,1641)`, std 0.70, 21%
+1. **Control loop is fine.** Obs is healthy (shape `(16,1641)` — that is
+   *(num_envs, obs_dim)* under `diagnose_sac.py`'s `num_closest_objects=8` and no
+   `goal` block, **not** the 16-agent layout used by `repro_sac_v2`; std 0.70, 21%
    zeros, varies per scene); the trained policy ≠ random-init (‖Δaction‖=3.3).
    So it is not a dead-obs / no-gradient wiring bug.
 2. **Trained policy ≈ coast.** Rollout (reached / collision / offroad):
@@ -767,7 +769,8 @@ offroad 0.45, `mean_max_lateral_m` 13.3):
 | **path_target** | 3 | 1 | 2 | 3 | 6 |
 | goal | 1 | 1 | 5 | 1 | 6 |
 
-(V-Max's own vector was 1641; ours adds a `goal` block, which repro_sac_v2 has no
+(V-Max's own vector at this config is 1961; ours adds the 6-wide `goal` block,
+which repro_sac_v2 has no
 equivalent of — but our task is goal-reaching and the reward references the goal,
 so the policy has to see it.)
 
@@ -783,7 +786,10 @@ straight to the `[256,64,32]` head — so `features_dim` defaults to 128.
 ## Reward: bounded indicator, not per-metre
 
 `--off-route-threshold-m 3.0 --r-off-route -0.2` reproduces V-Max's `off_route`:
-a **bounded** per-step indicator. The old `--r-lateral-penalty` (per-metre,
+a **bounded** per-step indicator. `--progression-indicator` does the same for
+`progression` (+`--r-progress` on any step where route arclength increased, not
+per metre advanced) — without it the term scales with speed and, at 1–2 m/step,
+pays several times V-Max's rate for driving fast rather than for progressing. The old `--r-lateral-penalty` (per-metre,
 unbounded) is still available but is what let the route term swallow the entire
 return. `REWARD_PRESET=legacy` restores the old preset for comparison.
 

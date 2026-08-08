@@ -7,8 +7,13 @@ from .base import Wrapper
 
 # Interface wrappers
 from .interfaces.brax import AutoResetWrapper, BraxWrapper, EnvTransition, VmapWrapper
-from .interfaces.gym import GymWrapper
 from .interfaces.multi_agent import MultiAgentBraxWrapper
+
+# Optional: see vmax/simulator/wrappers/interfaces/__init__.py.
+try:
+    from .interfaces.gym import GymWrapper
+except ImportError:  # pragma: no cover - depends on the environment
+    GymWrapper = None
 
 # Observation wrappers
 from .observation import ObservationWrapper

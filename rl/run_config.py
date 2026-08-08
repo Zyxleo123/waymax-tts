@@ -52,6 +52,7 @@ ENV_ARG_KEYS: tuple[str, ...] = (
     "r_lateral_penalty",
     "off_route_threshold_m",
     "r_off_route",
+    "progression_indicator",
 )
 
 # Everything the encoder factory reads (``encoder``, ``encoder_dk``,

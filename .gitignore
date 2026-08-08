@@ -64,3 +64,18 @@ V-Max/runs/
 V-Max/val_full/
 V-Max/vmax_smoke/
 V-Max/slurm-*.out
+
+# ScenarioMax: vendored as a clone with its own .git (nested repo), not yet
+# folded into this repo like V-Max was. Ignore until that's done deliberately.
+ScenarioMax/
+
+# hydra run dirs, RL/SAC checkpoints, generated videos and repro artifacts
+outputs/
+runs/
+pseudo_gt_videos/
+refine/
+es_baseline/repro/
+
+# stray root-level training logs and debug images
+*.log
+training_tfexample.tfrecord-*.png

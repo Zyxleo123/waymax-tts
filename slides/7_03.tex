@@ -1,0 +1,270 @@
+% ==================================================================
+% July 3 recap --- kept in full. Frames only; preamble lives in main.tex.
+% ==================================================================
+\section{Recap: pipeline \& first results (July 3)}
+
+% ------------------------------------------------------------------
+\begin{frame}{Motivation}
+  \textbf{Goal:} refine trajectories on \emph{hard} VLA failure cases and export clean rollouts for downstream finetuning.
+
+  \vspace{0.6em}
+  \begin{itemize}
+    \item Train a strong driving policy with \textbf{V-Max SAC} on \textbf{ScenarioMax} (V-Max native layout).
+    \item Roll the checkpoint on mapped failure scenarios $\rightarrow$ \textbf{pseudo-GT} trajectories.
+    \item Score rollouts with the \textbf{original WOMD / VLA success criterion} (goal + safety).
+    \item Use successful rollouts for \textbf{policy / planner finetuning} (next step).
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{V-Max SAC setup (\texttt{repro\_sac\_v2})}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+    \textbf{Environment}
+    \begin{itemize}
+      \item Simulator: Waymax via V-Max wrappers
+      \item Data: \texttt{ScenarioMax (400K)}
+        \begin{itemize}
+            \item Converted from WOMD raw data
+        \end{itemize}
+      \item Dynamics: bicycle model
+      \item Horizon: 80 RL steps / episode; 64 agents; 10$\times$300 SDC paths
+    \end{itemize}
+
+    \vspace{0.5em}
+    \textbf{Algorithm}
+    \begin{itemize}
+      \item Soft Actor-Critic (SAC), 25M env steps
+      \item Gaussian policy, twin Q, $\alpha{=}0.2$
+    \end{itemize}
+
+    \column{0.48\textwidth}
+    \textbf{Reward (linear)}
+    \begin{center}
+      \begin{tabular}{@{}lr@{}}
+        \toprule
+        Term & Weight \\
+        \midrule
+        overlap & $-1.0$ \\
+        offroad & $-1.0$ \\
+        run red light & $-1.0$ \\
+        off-route & $-0.2$ \\
+        progression (route) & $+0.2$ \\
+        \midrule
+        \multicolumn{2}{l}{\emph{No explicit goal-reaching term}} \\
+        \bottomrule
+      \end{tabular}
+    \end{center}
+
+    Termination: offroad, overlap, run\_red\_light.
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Policy architecture: LQ encoder + MLP head}
+  \textbf{Observation} (\texttt{obs\_type=vec}): flat vector unflattened into
+  \begin{itemize}
+    \item SDC history, 16 closest agents, local roadgraph (200 pts),
+          5 traffic lights, 3 SDC path-target waypoints
+  \end{itemize}
+
+  \vspace{0.4em}
+  \textbf{LQ encoder} (Latent-Query / Perceiver-style):
+  \begin{enumerate}
+    \item \textbf{Per-modality MLP embed:} 5 separate $[256,256]$ MLPs $\rightarrow d_k{=}64$ + learned positional encodings
+    \item \textbf{Scene tokens:} concatenate embedded tokens ($\sim$313) with validity masks
+    \item \textbf{LQAttention} ($\times 4$, tied weights): 16 learnable latents attend to scene via cross-attention, then self-attention + feedforward each block
+    \item \textbf{Pooling:} mean over 16 latents $\rightarrow$ fixed-size embedding
+  \end{enumerate}
+
+  \vspace{0.4em}
+  \textbf{Heads:}
+  \begin{itemize}
+    \item \textbf{Policy MLP} $[256,64,32]$ $\rightarrow$ Gaussian $(a_x, a_\delta)$
+    \item \textbf{Twin Q MLPs} $[256,64,32]$ (separate encoders; actions concatenated at input)
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Training result on ScenarioMax}
+  \begin{block}{Native V-Max eval (\texttt{ScenarioMaxWaymoValid})}
+    Episode \textbf{accuracy} $\approx$ \trainacc{} over training\\
+    \small(accuracy = no offroad, overlap, or red-light termination)
+  \end{block}
+
+  \vspace{0.5em}
+  Policy learns \textbf{safe route following} on ScenarioMax:
+  \begin{itemize}
+    \item \texttt{progression} rewards moving along expert SDC paths (arc-length), not Euclidean distance to a goal point.
+    \item Strong collision / offroad avoidance on the \emph{training} map layout.
+  \end{itemize}
+
+  \vspace{0.3em}
+  \centering
+  \textit{Good sim driver on ScenarioMax --- but objective $\neq$ WOMD goal-reaching.}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Pseudo-GT pipeline}
+  {\large\bfseries Scene linking via \texttt{scenario/id}}
+
+  \vspace{0.8em}
+  \textbf{Rollout}:\\[0.35em]
+  Failure JSON $\rightarrow$ \texttt{tfrecord + scene\_idx}
+  $\rightarrow$ read WOMD record $\rightarrow$ \texttt{scenario/id}
+  $\rightarrow$ ScenarioMax scene $\rightarrow$ SAC rollout $\rightarrow$ \texttt{trajectory.npz}
+
+  \vspace{0.9em}
+  \textbf{Eval}:\\[0.35em]
+  Failure JSON $\rightarrow$ \texttt{tfrecord + scene\_idx}
+  $\rightarrow$ WOMD scene $\rightarrow$ splice trajectory.npz $\rightarrow$ Metrics
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Metrics on failure scenarios}
+  \begin{table}
+    \centering
+    \small
+    \begin{tabular}{@{}lccp{5.4cm}@{}}
+      \toprule
+      Metric & Rate & Scene & Meaning \\
+      \midrule
+      \textbf{Failure success} & \womdsucc{} & WOMD &
+        Goal ($\leq$2\,m) + no overlap/offroad/TL before goal \\
+      Goal reached & 70\% & WOMD & Ever within 2\,m of \texttt{goal\_xy} \\
+      Overlap & 3.7\% & WOMD & Collision with another agent \\
+      Offroad & 4.6\% & WOMD & Ego off drivable surface \\
+      TL violation & 0.5\% & WOMD & Ran red light \\
+      \midrule
+      Original VLA success & 0\% & WOMD & Input set (all prior failures) \\
+      Still failing & 32\% & WOMD & \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.3em}
+  \textbf{Takeaway:} \womdsucc{} clean success on hard failures; driving is \textbf{safe}, main gap is \textbf{goal-reaching}.
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{What drives failures?}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+    \textbf{Among failures (32\%):}
+    \begin{itemize}
+      \item \textbf{94\%} missed goal (never within 2\,m)
+      \item 11\% overlap, 14\% offroad
+      \item Only \textbf{4} cases: reached goal but not clean
+    \end{itemize}
+
+    \vspace{0.5em}
+    \textbf{vs.\ original VLA:}
+    \begin{itemize}
+      \item VLA reached goal 86\%, but \textbf{never cleanly}
+      \item Overlap 34\%, offroad 65\%
+      \item SAC: much safer, fewer goals
+    \end{itemize}
+
+    \column{0.52\textwidth}
+    \textbf{Scenario 052: failure mode comparison}
+    \vspace{0.3em}
+
+    \small
+    \begin{tabular}{@{}p{1.55cm}p{4.8cm}@{}}
+      \toprule
+      & \textbf{VLA} \emph{(failed: offroad)} \\
+      \midrule
+      Driving & Crosses \textbf{road boundary}; aggressive \\
+      Speed & Fast \\
+      Goal & \checkmark\ Reached (0.02\,m) \\
+      \midrule
+      & \textbf{RL / SAC} \emph{(failed: goal miss)} \\
+      \midrule
+      Driving & Stays in lane; avoids boundary \\
+      Speed & Slow / cautious \\
+      Goal & \textbf{11.5\,m} from goal (threshold 2\,m) \\
+      \bottomrule
+    \end{tabular}
+
+    \vspace{0.5em}
+    \textit{Same scene, opposite failure modes: VLA rushes to goal offroad; RL drives safely but stops short.}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Training objective vs.\ WOMD eval}
+  \centering
+  \begin{tikzpicture}[
+    box/.style={draw, rounded corners, align=center, font=\small,
+                minimum width=4.6cm, minimum height=1.5cm, inner sep=5pt}
+  ]
+    \node[box, fill=blue!10] (train) at (0,0) {
+      \textbf{V-Max training}\\[2pt]
+      Progress along \textbf{SDC paths}\\
+      $+$ safety penalties\\
+      \emph{No goal bonus}
+    };
+    \node[box, fill=green!10] (eval) at (7.5,0) {
+      \textbf{WOMD VLA eval}\\[2pt]
+      Euclidean dist.\ to \texttt{goal\_xy}\\
+      $+$ safety before goal
+    };
+    \draw[-{Stealth[length=3mm]}, thick, red!70] (train.east) -- node[above, font=\scriptsize]{gap} (eval.west);
+  \end{tikzpicture}
+
+  \vspace{0.8em}
+  \begin{itemize}
+    \item Remaining \textbf{32\%} WOMD failures are mostly \textbf{goal miss}, not crashes.
+    \item Scenario 052 pattern: clean driving, 11\,m from goal; VLA reached goal offroad.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Real difficulty gap}
+  \centering
+  \begin{tikzpicture}[
+    box/.style={draw, rounded corners, align=center, font=\small,
+                minimum width=4.6cm, minimum height=1.5cm, inner sep=5pt}
+  ]
+    \node[box, fill=blue!10] (train) at (0,0) {
+      \textbf{ScenarioMax training}\\[2pt]
+      Random scenes\\
+      $\sim$97\% accuracy
+    };
+    \node[box, fill=red!10] (fail) at (7.5,0) {
+      \textbf{Failure cases}\\[2pt]
+      Cherry-picked hard scenes\\
+      0\% original VLA success
+    };
+    \draw[-{Stealth[length=3mm]}, thick, red!70] (train.east) -- node[above, font=\scriptsize]{gap} (fail.west);
+  \end{tikzpicture}
+
+  \vspace{0.8em}
+  \begin{itemize}
+    \item Real hazards concentrate here: \textbf{overlap} (3.7\%), \textbf{offroad} (4.6\%) on WOMD eval.
+    \item Original VLA was much worse: 34\% overlap, 65\% offroad --- policy must handle tight interactions.
+    \item \textbf{Solution:} finetune (overfit) on \textbf{failure scenes only}; early stop on \textbf{both}
+          eval scenes (general driving) and failure scenes (learn those layouts).
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Next steps (as planned July 3)}
+  \begin{enumerate}
+    \item \textbf{Add goal-reaching reward} to V-Max training / finetuning
+    \begin{itemize}
+      \item e.g.\ bonus for reducing distance to expert \texttt{goal\_xy} (or route endpoint)
+      \item Finetune \texttt{repro\_sac\_v2} on failure subset with goal term
+    \end{itemize}
+    \item \textbf{Finetune on only Failure Scenes}. Early stop jointly with eval scenes and failure scenes to prevent overfitting bad driving behaviors
+    \item \textbf{Export clean rollouts} for downstream \textbf{policy / planner finetuning}
+    \begin{itemize}
+      \item Diffusion planner or VLA refinement on successful trajectories
+    \end{itemize}
+  \end{enumerate}
+
+  \vspace{0.6em}
+  \centering
+  \textit{$\Rightarrow$ July 17: all three done. The goal reward closed most of the gap ---
+  and the real work became \textbf{pseudo-GT quality}.}
+\end{frame}

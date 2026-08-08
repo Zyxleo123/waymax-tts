@@ -127,6 +127,42 @@ cd /zfsauton2/home/yixiz/waymax_rs/es_baseline
 bash experiments/run_arms.sh
 ```
 
+### Online SAC initialization (`--sac_online`)
+`sac_bank.py` + `dump_sac_init_bank.py` are the **offline** SAC init: K closed-loop
+episodes rolled once per scene from the env's own reset point (scenario step 10),
+re-sliced at every replan. Once ES has executed a few non-SAC candidates the live ego
+is off that schedule, and the bank has to be re-anchored onto it by nearest-point
+search — a splice the policy never proposed.
+
+`sac_online.py` (`--sac_online --sac_run_dir ...`) replaces that with **K rollouts
+launched from the live ego state at every replan**:
+
+- the executed ego history goes into a clean V-Max state's `sim_trajectory`, never
+  its `log_trajectory` — ES rewrites the ego's log with each accepted plan, and V-Max
+  reads the log for the goal and the route, so feeding it back would move the goal;
+- trajectory index 0 is the ego's current pose, so `init_sac_anchor_gap_m` is 0 by
+  construction and the re-anchoring search is a no-op;
+- diversity comes from sampling the policy (`deterministic=False`), with
+  `--sac_action_noise` as a knob if the policy's own entropy is too low;
+- no bank, no manifest, no ScenarioMax hit list — any scenario in the shard works,
+  which is why this arm uses the same scene lists as `run_arms.sh`.
+
+The env, observation config, object budget and network all come from the training
+run's own `.hydra/config.yaml`, and the checkpoint defaults to `model/model_best.pkl`
+(V-Max's own picker takes the highest-numbered file, which is a later, worse one).
+
+```bash
+# smoke: does the policy load, anchor on the live pose, and give a diverse population?
+sbatch es_baseline/slurm_sac_online_smoke.sbatch
+
+# the arm (dense selection + online sac_safe init) over all 3 shards
+SCRIPT=es_baseline/experiments/run_sac_online_arms.sh sbatch es_baseline/slurm_es.sbatch
+```
+
+Running V-Max in the ES interpreter needed three of its imports made optional
+(`gymnasium`, `distrax`, `tensorboardX`) — all training/plotting-only dependencies
+that the inference path never touches.
+
 ### Go/no-go read-out
 - **conversions > 0 with controls kept** → dense reward resolution has oracle
   leverage → learning a value/ranking model is justified (Stage 5 GO).

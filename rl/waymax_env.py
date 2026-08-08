@@ -113,6 +113,12 @@ class RewardConfig:
     # ``off_route_threshold_m`` to switch to the V-Max form.
     off_route_threshold_m: float | None = None
     off_route_penalty: float = -0.2
+    # V-Max's `progression` is likewise a *bounded* indicator: +w on any step
+    # where route arclength increased, whether by 0.1 m or 1 m. The per-metre
+    # form here scales with speed, so at 1-2 m/step it pays 5-10x V-Max's rate
+    # and pays it for driving fast rather than for making progress. Set True for
+    # V-Max parity.
+    progression_indicator: bool = False
 
 
 def observation_dim() -> int:
@@ -324,10 +330,15 @@ class WaymaxGymEnv(gym.Env):
 
         rc = self._reward
         s, lateral = _project_to_route(
-            np.asarray(ego_xy), self._route_xy, self._route_s
+            np.asarray(ego_xy), self._route_xy, self._route_s, prev_s=self._prev_s
         )
         if rc.route_reward:
-            reward = rc.progress * (s - self._prev_s)
+            if rc.progression_indicator:
+                # V-Max's `progression`: a bounded +w whenever route progression
+                # increased at all, regardless of by how much.
+                reward = rc.progress * float(s > self._prev_s)
+            else:
+                reward = rc.progress * (s - self._prev_s)
             if rc.off_route_threshold_m is None:
                 reward -= rc.lateral_penalty * lateral
             else:
@@ -503,11 +514,26 @@ def _compute_route(scen_np: Any) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _project_to_route(
-    ego_xy: np.ndarray, route_xy: np.ndarray, cum_s: np.ndarray
+    ego_xy: np.ndarray,
+    route_xy: np.ndarray,
+    cum_s: np.ndarray,
+    prev_s: float | None = None,
+    back_window_m: float = 5.0,
+    fwd_window_m: float = 25.0,
 ) -> tuple[float, float]:
     """Projects ``ego_xy`` onto the route polyline.
 
     Returns ``(arclength_at_projection, lateral_distance)``.
+
+    The nearest segment is searched *locally* around ``prev_s`` rather than
+    globally. A global argmin makes the projection teleport wherever the route
+    passes near itself -- at an intersection the ego re-approaches, or a path
+    that doubles back -- and since the progression reward is ``s - prev_s``, a
+    teleport forward pays out metres of progress the ego never drove (and a
+    teleport backward charges a penalty it never earned). Restricting the search
+    to ``[prev_s - back_window_m, prev_s + fwd_window_m]`` keeps the projection
+    on the branch the ego is actually travelling. ``prev_s=None`` (episode
+    reset) still searches globally, which is what we want with no history.
     """
     if route_xy.shape[0] < 2:
         d = float(np.linalg.norm(ego_xy - route_xy[0]))
@@ -520,6 +546,16 @@ def _project_to_route(
     t = np.clip(t, 0.0, 1.0)
     proj = a + t[:, None] * ab
     dists = np.linalg.norm(proj - ego_xy, axis=1)
+
+    if prev_s is not None:
+        # A segment is a candidate if it overlaps the window at all, so the
+        # ego is never boxed out of the segment it is standing on.
+        in_window = (cum_s[1:] >= prev_s - back_window_m) & (
+            cum_s[:-1] <= prev_s + fwd_window_m
+        )
+        if in_window.any():
+            dists = np.where(in_window, dists, np.inf)
+
     k = int(np.argmin(dists))
     s = float(cum_s[k] + t[k] * (cum_s[k + 1] - cum_s[k]))
     return s, float(dists[k])

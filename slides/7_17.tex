@@ -1,0 +1,299 @@
+% ==================================================================
+% July 17 update. Frames only; preamble lives in main.tex.
+% ==================================================================
+
+% ##################################################################
+\section{The failure set is mostly already solved}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Since July 3: the goal-reaching reward}
+  July 3's plan was ``add a goal term.'' Done --- two pieces:
+  \begin{itemize}
+    \item \textbf{\texttt{reached\_goal\_once}} $+5$: one-off bonus the first time the SDC is within 2\,m of the goal (cannot be farmed by camping).
+    \item \textbf{Potential-based goal shaping}: $\Phi(s) = -\,\text{dist to goal}$, dense and policy-invariant (Ng et al.\ 1999).
+  \end{itemize}
+
+  \vspace{0.6em}
+  \centering
+  \textit{This closed most of the goal-reaching gap --- but the interesting part is what happened next.}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{The failures are mostly already solved}
+  \textbf{Clean-rollout banking}, warm-started from the pretrained checkpoint:
+  \begin{center}
+    \begin{tabular}{@{}lc@{}}
+      \toprule
+      & solved (clean, goal-reaching) \\
+      \midrule
+      pretrained checkpoint, \emph{first} eval & \textbf{157 / 218} ($\sim$72\%) \\
+      after 20k SAC steps & \textbf{202 / 218} (92.7\%) \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+
+  \vspace{0.5em}
+  \textbf{Reframe:} these 245 scenes are the \emph{diffusion / VLA planner's} failures ---
+  harvested from \emph{it} failing, not V-Max.
+  \begin{itemize}
+    \item V-Max SAC pretrain is $\sim$95\% clean on validation; nothing here is adversarial to it.
+    \item $\sim$72\% already solved by the \textbf{pre-trained SAC policy}, before any failure-set finetuning. Only the residual deserves budget.
+  \end{itemize}
+\end{frame}
+
+% ##################################################################
+\section{Harvesting pseudo-GTs: the trajectory bank}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Banking: success is a union over time}
+  \textbf{Idea:} a scenario only has to succeed \emph{once}, at \emph{any} checkpoint ---
+  not all-clean at one moment.
+  \begin{itemize}
+    \item Evaluate periodically; the first time a scene comes out clean, write its
+          trajectory to disk and mark it banked.
+    \item SAC oscillating between scenes (solve A, drift, solve B) becomes the
+          \textbf{harvest mechanism}, not a failure mode.
+    \item Banked scenes drop out of training $\rightarrow$ budget flows to the unsolved ones.
+    \item Keep the \emph{smoothest} clean rollout seen per scene (upgrade in place).
+  \end{itemize}
+
+  \vspace{0.5em}
+  \textbf{Clean} $=$ reached goal $\wedge\ \neg$offroad $\wedge\ \neg$overlap ---
+  \emph{identical} to the raw VLA failure label (verified on all 245).
+\end{frame}
+
+% ##################################################################
+\section{But the rollouts are not clean BC targets}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Problem 1 --- overshoot}
+  Banked rollouts reach the goal, then \textbf{keep driving}.
+  \begin{itemize}
+    \item Median \textbf{33\,m} past the goal (max 75\,m), $\sim$3\,s of extra driving.
+    \item Clean by the metric (\texttt{reached\_goal} = ``reached at least once'').
+  \end{itemize}
+
+  \vspace{0.4em}
+  \textbf{Why:} the expert log does \emph{not} decelerate into the goal.
+  \begin{itemize}
+    \item The goal is just where the 9\,s recording was \emph{cut} ---
+          the human is still moving \textbf{6.8\,m/s} (median) at the last logged frame.
+    \item So a good pseudo-GT should be \textbf{truncated} at closest approach, not run to 91 frames.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Problem 2 --- the ``shimmy''}
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    A \textbf{period-2 yaw limit cycle}: heading flips $\pm25^\circ$ \emph{every frame}
+    while the body tracks a straight path.
+    \begin{itemize}
+      \item Peak yaw rate \textbf{3.07\,rad/s} (p50) vs the human's \textbf{0.35} (max ever 1.09).
+      \item \textbf{186 / 202} rollouts sit outside the human's \emph{entire} yaw-rate range.
+      \item $\sim$21\% in a severe sustained cycle.
+    \end{itemize}
+    \textbf{Cause:} nothing penalizes it, and entropy $\alpha$ collapsed toward a bang-bang policy.
+
+    \column{0.54\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{shimmy_repair_197}\\[2pt]
+    {\scriptsize Consecutive frames. \textbf{Top:} original --- the ego box tilts a
+    different way each frame. \textbf{Bottom:} repaired (next section).}
+  \end{columns}
+\end{frame}
+
+% ##################################################################
+\section{Fixing pseudo-GT quality}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Fix 1 --- truncate at the goal}
+  Cut each trajectory at its closest approach to the goal.
+  \begin{center}
+    \begin{tabular}{@{}lcc@{}}
+      \toprule
+      distance to goal at last frame & before & after \\
+      \midrule
+      median & 33\,m & \textbf{0.7\,m} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+
+  \vspace{0.5em}
+  \textbf{Truncate by validity, not by shortening the array.}
+  \begin{itemize}
+    \item Every splice path forces \texttt{valid=True} only on the written slice;
+          a shortened array leaves the \emph{original} human log in the tail.
+    \item Measured teleport if done wrong: \textbf{16.7\,m in one 0.1\,s frame}
+          (vs a normal 1.4\,m step). So: set \texttt{valid=False} past the cut.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Fix 2 --- can a reward remove the shimmy? No.}
+  Added a \texttt{yaw\_rate\_penalty}; swept the weight (same checkpoint, same step):
+  \begin{center}
+    \small
+    \begin{tabular}{@{}lccc@{}}
+      \toprule
+      penalty & reached rate & frac.\ over 0.95\,rad/s & banked \\
+      \midrule
+      none    & 0.83 $\to$ \textbf{0.89} & $\sim$0.92 & --- \\
+      $-0.5$  & 0.79 $\to$ 0.73          & 0.927      & 0.88 \\
+      $-2.0$  & 0.66 $\to$ \textbf{0.45} & 0.962      & 0.72 \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+
+  \vspace{0.4em}
+  \textbf{All cost, no benefit:} the penalty costs goal-reaching and barely moves the chatter;
+  at $-2.0$ it \emph{halves} goal-reaching.
+  \begin{itemize}
+    \item V-Max's own \texttt{comfort} reward is \emph{blind} to it: it savgol-filters yaw,
+          which erases a period-2 signal (reads 4.5\,rad/s as 0.06).
+    \item[$\Rightarrow$] Fix the artifact \textbf{post-hoc}, not in the reward.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Fix 3 --- post-hoc repair}
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \textbf{\texttt{path\_savgol}}: smooth the path, then re-derive heading \emph{and} velocity from it.
+    \begin{itemize}
+      \item The bicycle model bakes the wobble into position ($\pm$0.3\,m), so smoothing
+            the \emph{path} beats smoothing yaw alone.
+      \item Yaw-reversal rate \textbf{0.50 $\to$ 0.13} (human 0.05); moves the car $\leq$\,0.35\,m.
+      \item \textbf{Validated safe} (re-scored on WOMD): 19/20 clean before, \textbf{19/20 after, 0 broken}.
+    \end{itemize}
+
+    \vspace{0.2em}
+    \centering\small
+    \begin{tabular}{@{}lc@{}}
+      \toprule
+      peak yaw rate (p50, rad/s) & \\
+      \midrule
+      raw banked rollout & 3.07 \\
+      $+$ repair & 1.30 \\
+      $+$ keep smoothest per scene & \textbf{0.85} \\
+      \midrule
+      comfort limit / human & 0.95 / 0.35 \\
+      \bottomrule
+    \end{tabular}
+
+    \column{0.5\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{shimmy_repair_127_149}\\[2pt]
+    {\scriptsize Two scenes. In each pair, \textbf{top} original wobbles frame-to-frame,
+    \textbf{bottom} repaired stays lane-aligned.}
+  \end{columns}
+\end{frame}
+
+% ##################################################################
+\section{Where we land, and the open issue}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Final accounting: 207 banked, and the residual}
+  \begin{columns}[T]
+    \column{0.42\textwidth}
+    \begin{center}
+      \begin{tabular}{@{}lr@{}}
+        \toprule
+        raw failure scenes & 245 \\
+        $-$ overpass (excluded) & $-27$ \\
+        \midrule
+        in the pipeline & \textbf{218} \\
+        clean pseudo-GT banked & \textbf{207} \\
+        unbanked & \textbf{11} \\
+        \bottomrule
+      \end{tabular}
+    \end{center}
+    \centering\small
+    The \textbf{11 unbanked} split into\\ \textbf{8 mislabeled} $+$ \textbf{3 correctly labeled}.
+
+    \column{0.58\textwidth}
+    \textbf{The caveats, in full}
+    \begin{itemize}
+      \item \textbf{27 overpasses} (11\%): ScenarioMax's 2D roadgraph can't stack decks.
+            \good\ \textbf{22} recoverable (keep-ego-level filter) $\Rightarrow$ \textbf{240}.
+      \item \textbf{Mislabeled} $=$ the \emph{expert log itself} fails the metric (human
+            offroad/overlap). \textbf{18} scenes total; verified: log fails \textbf{72.7\%}
+            on unbanked vs \textbf{4.8\%} on banked --- concentrated, not noise.
+        \begin{itemize}
+          \item[\good] \textbf{10} of the 18 we \emph{solved anyway} (policy $>$ human).
+          \item[$\cdot$] \textbf{8} still unbanked --- broken label, e.g.\ one is a corrupt $+101$\,m record.
+        \end{itemize}
+      \item \textbf{3 correctly labeled}: clean expert log, genuinely winnable --- get targeted budget.
+    \end{itemize}
+    \vspace{0.1em}
+    {\scriptsize $\Rightarrow$ practical ceiling $\approx \mathbf{210}$ (207 $+$ the 3); recovering overpasses lifts the denominator to 240.}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{The label is the problem, not the scene}
+  On \textbf{10} scenes the \emph{human's own logged trajectory} goes offroad or collides ---
+  yet our policy drives them clean and they are banked.
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \centering
+    \textbf{Expert log (the ``ground truth'')}\\[2pt]
+    \includegraphics[width=\linewidth]{mislabeled_expert}\\[2pt]
+    {\scriptsize goes offroad / collides}
+    \column{0.5\textwidth}
+    \centering
+    \textbf{Our banked pseudo-GT}\\[2pt]
+    \includegraphics[width=\linewidth]{mislabeled_ours}\\[2pt]
+    {\scriptsize same scene, driven clean}
+  \end{columns}
+  \vspace{0.3em}
+  \centering\small
+  \textit{This is why ``expert log fails'' means \textbf{mislabeled}, not unsolvable.}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{The open issue: speeding}
+  The banked rollouts drive the \emph{right route} --- just too fast.
+  \begin{itemize}
+    \item Policy vs expert \textbf{path length} to the goal: ratio \textbf{1.00} (median) --- same route.
+    \item Reaches the goal at \textbf{$\sim$1.7$\times$ the expert's speed}.
+      \begin{itemize}
+        \item \emph{median of the per-scene speed ratio} (policy speed at goal / expert speed at goal).
+        \item Robust statistic: the \emph{mean} is unusable --- some experts stop \emph{at} the goal, so the ratio blows up.
+        \item Equivalently: covers the route in $\sim$60\% of the expert's time (time-compression 1.68$\times$).
+      \end{itemize}
+    \item The overshoot (Problem 1) is the \emph{symptom}; this is the cause.
+  \end{itemize}
+
+  \vspace{0.3em}
+  \centering
+  \textit{Truncation and repair don't touch this --- it needs reward / episode design
+  (the goal is a fixed-\emph{time} budget the policy is rewarded for beating).}
+\end{frame}
+
+% ##################################################################
+\section{Next steps}
+% ##################################################################
+
+% ------------------------------------------------------------------
+\begin{frame}{Next steps}
+  \begin{enumerate}
+    \item \textbf{Distill the harvest.} 207 truncated, repaired pseudo-GTs (yaw $\leq$ human limit)
+          $\rightarrow$ finetune the \textbf{diffusion planner}. ScenarioMax$\to$WOMD translation
+          verified at \textbf{99.5\%}.
+    \item \textbf{Fix the speeding.} The one defect truncation + repair don't touch ---
+          reward / episode design (goal as a fixed-time budget the policy beats).
+    \item \textbf{Recover the overpasses.} Keep-ego-level pre-filter $\rightarrow$ denominator
+          \textbf{240}; the 3 winnable stragglers get targeted budget.
+  \end{enumerate}
+
+  \vspace{0.6em}
+  \centering
+  \textit{From ``68\% clean success'' to a repaired, near-complete pseudo-GT set ---
+  ready for downstream finetuning.}
+\end{frame}

@@ -17,9 +17,17 @@
 
 import abc
 
-import distrax
 import jax
 import jax.numpy as jnp
+
+
+# distrax is only needed by the Beta action distribution. Keeping the import optional
+# lets the gaussian policies (all the SAC runs here) load in environments without it,
+# such as the Diffusion-ES stack that runs V-Max in-process for online SAC init.
+try:
+    import distrax
+except ImportError:  # pragma: no cover - depends on the environment
+    distrax = None
 
 
 class ParametricDistribution(abc.ABC):
@@ -167,7 +175,11 @@ class NormalTanhDistribution(ParametricDistribution):
 class AffineBijector:
     """Affine bijector that map the support of the beta from [0,1] to [-1,1]."""
 
-    affine_bijector = distrax.Lambda(lambda x: 2 * x - 1)
+    @property
+    def affine_bijector(self):
+        if distrax is None:
+            raise ImportError("distrax is required for the Beta action distribution")
+        return distrax.Lambda(lambda x: 2 * x - 1)
 
     def forward(self, x):
         return self.affine_bijector.forward(x)

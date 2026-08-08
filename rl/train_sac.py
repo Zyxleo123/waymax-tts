@@ -169,6 +169,7 @@ def make_base_env_fn(source: ScenarioSource, args, *, seed: int, sequential: boo
         lateral_penalty=args.r_lateral_penalty,
         off_route_threshold_m=args.off_route_threshold_m,
         off_route_penalty=args.r_off_route,
+        progression_indicator=args.progression_indicator,
     )
 
     env_cls = StreamingWaymaxGymEnv if isinstance(source, StreamingScenarioSource) else WaymaxGymEnv
@@ -322,6 +323,15 @@ def main():
     total_timesteps = 128 if args.smoke else args.total_timesteps
     # On resume, learn() counts from the restored num_timesteps, so ask only for
     # what is left and keep the existing step counter.
+    # Write the env config *before* training, not just after: periodic
+    # checkpoints are useless without it, and a preempted job never reaches the
+    # post-`learn()` save. Rewritten again on clean exit (harmless, same content).
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_run_config(
+        save_dir, args, extra={"entrypoint": "train_sac", "total_timesteps": args.total_timesteps}
+    )
+
     remaining = total_timesteps
     if resume_from is not None:
         remaining = max(0, total_timesteps - model.num_timesteps)
@@ -336,8 +346,6 @@ def main():
     else:
         print("[train_sac] target already reached; nothing to train")
 
-    save_dir = Path(args.save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
     out_path = save_dir / "sac_waymax"
     model.save(out_path.as_posix())
     cfg_path = save_run_config(
@@ -416,6 +424,10 @@ def _parse_args():
                         "this many meters, instead of the per-meter penalty.")
     p.add_argument("--r-off-route", type=float, default=-0.2,
                    help="Per-step off-route penalty (V-Max reward_config.off_route).")
+    p.add_argument("--progression-indicator", action="store_true",
+                   help="Make the route progression term V-Max's bounded indicator: "
+                        "award --r-progress on any step where route arclength "
+                        "increased, instead of --r-progress per meter advanced.")
     # BooleanOptionalAction, not store_true: store_true forces a False default,
     # which silently overrode RewardConfig.terminate_on_collision=True for every
     # launcher that did not pass the flag.
