@@ -100,10 +100,18 @@ def main() -> None:
         m = re.search(r"tf(\d{5})", a["tfrecord_dir"])
         canon = f"tfrecord-{m.group(1)}-of-01000" if m else rec
         idx_list = [int(x) for x in str(a["scenario_indices"]).split(",")] if a.get("scenario_indices") else []
+        # world_idx indexes sim_state, which load_scenario_state_batch_fast returns
+        # in ascending record order *within each num_worlds batch* -- not in the
+        # requested order. Rebuild the true world_idx -> scene map by sorting each
+        # batch, matching the loader (and runner.py). Using idx_list[w] directly is
+        # only correct when the request is already sorted.
+        nw = int(a.get("num_worlds") or len(idx_list) or 1)
+        world_scene = [s for c in range(0, len(idx_list), nw)
+                       for s in sorted(idx_list[c:c + nw])]
         for r in blob["records"]:
             w = r["world_idx"]
-            if w < len(idx_list):
-                diags[(arm, canon, idx_list[w])].append(r)
+            if w < len(world_scene):
+                diags[(arm, canon, world_scene[w])].append(r)
 
     def is_fail(rec, idx):
         return idx in ORIG_FAIL.get(rec, set())

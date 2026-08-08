@@ -72,7 +72,7 @@ def run(args, planner: AbstractPlanner, log_replay=False) -> list[dict[str, Any]
         else:
             scenario_indices = curr_scenario_index + np.arange(int(args.num_worlds))
         try:
-            sim_state, _ = load_scenario_state_batch_fast(ds_cfg, scenario_indices)
+            sim_state, scenario_to_batch_idx = load_scenario_state_batch_fast(ds_cfg, scenario_indices)
         except Exception as e:
             print(f"Error loading scenarios {scenario_indices} from {os.path.basename(tfrecord_path)}: {e}")
             print(f"Scenarios in {os.path.basename(tfrecord_path)} are all tested, moving to next tfrecord.")
@@ -86,6 +86,15 @@ def run(args, planner: AbstractPlanner, log_replay=False) -> list[dict[str, Any]
                 shuffle_seed=0,
             )
             continue
+
+        # load_scenario_state_batch_fast returns the batch in ascending record
+        # order, NOT the order requested here. Relabel scenario_indices to match
+        # sim_state's actual order so every world_idx -> scene mapping below (lane
+        # graphs, planner.batch_scenario_indices, and the per-scene output files)
+        # lines up with the tensors. Without this, an unsorted --scenario_indices
+        # (e.g. failure-set-first) silently mislabels every result/trajectory file.
+        # For an already-sorted request this is a no-op.
+        scenario_indices = sorted(scenario_to_batch_idx, key=scenario_to_batch_idx.get)
 
         print(f"Testing scenarios {scenario_indices} from {os.path.basename(tfrecord_path)}...")
 

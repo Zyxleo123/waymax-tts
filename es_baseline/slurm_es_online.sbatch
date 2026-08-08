@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=es_online
 #SBATCH --partition=general
-#SBATCH --nodelist=gpu31
+#SBATCH --nodelist=gpu26
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -20,7 +20,11 @@
 # 1 world x k=16. A CUDA/XLA allocation failure can take the process down without
 # a Python traceback, which matches the silent death.
 #
-# Node picked from `myfree`: gpu31, partition general, a6000, 8/8 GPUs free, IDLE.
+# Node picked from `myfree` (2026-08-08 re-run): gpu26, partition general, a6000,
+# 2/8 GPUs free, AVAILABLE (gpu31 is now full). This re-run also carries the
+# runner.py scene-relabel fix: the previous online results were mislabeled because
+# load_scenario_state_batch_fast returns the batch sorted while runner.py labeled
+# it in requested (failure-set-first) order.
 # The a6000 is the point — do not let this fall back onto a 2080 Ti node.
 #
 # Remaining differences from slurm_es.sbatch, kept as cheap discriminators:
