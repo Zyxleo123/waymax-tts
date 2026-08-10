@@ -989,7 +989,10 @@ class Scorer:
                 elif metric_name == "progress":
                     progress_score = self.compute_progress_score(ego_trajectories)
                     score = score + weight * progress_score
-                elif metric_name == "speed":
+                elif metric_name == "set_speed":
+                    # Registered by add_metric under the name "set_speed"; the
+                    # branch previously matched "speed", so the metric was dead
+                    # code (never scored, yet still diluting total_weight below).
                     speed_score = self.compute_speed_score(ego_trajectories)
                     score = score + weight * speed_score
                 elif metric_name == "overtake":

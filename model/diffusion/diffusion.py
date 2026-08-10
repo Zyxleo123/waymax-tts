@@ -329,8 +329,12 @@ class GaussianDiffusion(nnx.Module):
         sqrt_1mab = self._extract(self.sqrt_one_minus_alphas_cumprod.value, t, x_t.shape)
         return (x_t - sqrt_1mab * eps) / sqrt_ab
 
-    def p_mean_variance(self, x_t: jnp.ndarray, t: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        pred = self.denoise_fn(x_t, t, cond1, cond2, cond2_mask)
+    def p_mean_variance(self, x_t: jnp.ndarray, t: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, denoise_fn=None) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        # ``denoise_fn`` lets a caller substitute a different denoiser (e.g. the
+        # DPPO-trainable copy for the late steps) without changing default
+        # inference, which keeps using ``self.denoise_fn``.
+        fn = self.denoise_fn if denoise_fn is None else denoise_fn
+        pred = fn(x_t, t, cond1, cond2, cond2_mask)
 
         if self.predict_type == "eps":
             x0_pred = self.predict_x0_from_eps(x_t, t, pred)
@@ -368,10 +372,16 @@ class GaussianDiffusion(nnx.Module):
         else:  # "uniform"
             return jnp.full((num_steps,), sampling_temp, dtype=jnp.float32)
 
-    def p_sample(self, x_t: jnp.ndarray, t: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray,
-                 noise: jnp.ndarray, eta: float = 1.0, sampling_temp: float = 1.0) -> jnp.ndarray:
-        _, _, x0_pred = self.p_mean_variance(x_t, t, cond1, cond2, cond2_mask)
+    def _ddim_update(self, x_t: jnp.ndarray, t: jnp.ndarray, x0_pred: jnp.ndarray,
+                     noise: jnp.ndarray, eta: float = 1.0, sampling_temp: float = 1.0) -> jnp.ndarray:
+        """The eta-DDIM reverse step given an already-predicted ``x0``.
 
+        Factored out of :meth:`p_sample` so a caller that has already run the
+        denoiser once (e.g. :meth:`sample_with_trace`, which also needs the
+        posterior stats) can reuse the single prediction instead of invoking the
+        network twice -- the network is not purely functional across calls (nnx
+        rng streams), so a second call would perturb the trajectory.
+        """
         # Predicted noise direction
         sqrt_ab = self._extract(self.sqrt_alphas_cumprod.value, t, x_t.shape)
         sqrt_1mab = self._extract(self.sqrt_one_minus_alphas_cumprod.value, t, x_t.shape)
@@ -393,6 +403,11 @@ class GaussianDiffusion(nnx.Module):
         nonzero_mask = (t != 0).astype(x_t.dtype).reshape((-1, 1, 1))
         return jnp.sqrt(abar_prev) * x0_pred + dir_coeff * eps_pred + nonzero_mask * sigma * noise
 
+    def p_sample(self, x_t: jnp.ndarray, t: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray,
+                 noise: jnp.ndarray, eta: float = 1.0, sampling_temp: float = 1.0, denoise_fn=None) -> jnp.ndarray:
+        _, _, x0_pred = self.p_mean_variance(x_t, t, cond1, cond2, cond2_mask, denoise_fn=denoise_fn)
+        return self._ddim_update(x_t, t, x0_pred, noise, eta=eta, sampling_temp=sampling_temp)
+
     def _sample_impl(self, shape: Tuple[int, int, int], cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, 
                      rng: jax.Array, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = shape[0]
@@ -413,27 +428,37 @@ class GaussianDiffusion(nnx.Module):
         x_final, _ = jax.lax.fori_loop(0, num_steps, body, (x_init, key_steps))
         return x_final
 
-    def _compute_loss(self, x0: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, noise: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    def _compute_loss_per_example(self, x0: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, noise: jnp.ndarray, t: jnp.ndarray, denoise_fn=None) -> jnp.ndarray:
+        """Per-example diffusion loss, averaged over channels and time but NOT
+        over the batch. Returns ``[B]``. ``_compute_loss`` is its batch-mean."""
+        fn = self.denoise_fn if denoise_fn is None else denoise_fn
         x_t = self.q_sample(x0, t, noise=noise)
-        pred = self.denoise_fn(x_t, t, cond1, cond2, cond2_mask)
+        pred = fn(x_t, t, cond1, cond2, cond2_mask)
 
         if self.predict_type == "eps":
-            return jnp.mean((pred - noise) ** 2)
-        if self.predict_type == "mu":
-            return jnp.mean((pred - x0) ** 2)
-        if self.predict_type == "v":
+            target = noise
+        elif self.predict_type == "mu":
+            target = x0
+        elif self.predict_type == "v":
             sqrt_ab = self._extract(self.sqrt_alphas_cumprod.value, t, x0.shape)
             sqrt_1mab = self._extract(self.sqrt_one_minus_alphas_cumprod.value, t, x0.shape)
-            v = sqrt_ab * noise - sqrt_1mab * x0
-            return jnp.mean((pred - v) ** 2)
-        raise ValueError(f"Unsupported predict_type: {self.predict_type}")
+            target = sqrt_ab * noise - sqrt_1mab * x0
+        else:
+            raise ValueError(f"Unsupported predict_type: {self.predict_type}")
 
-    def _loss_impl(self, x0: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, rng: jax.Array) -> jnp.ndarray:
+        se = (pred - target) ** 2
+        return jnp.mean(se, axis=tuple(range(1, se.ndim)))  # mean over C, T -> [B]
+
+    def _compute_loss(self, x0: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, noise: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+        return jnp.mean(self._compute_loss_per_example(x0, cond1, cond2, cond2_mask, noise, t))
+
+    def _loss_impl(self, x0: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, rng: jax.Array, per_example: bool = False, denoise_fn=None) -> jnp.ndarray:
         batch = x0.shape[0]
         key_t, key_noise = jax.random.split(rng)
         t = jax.random.randint(key_t, (batch,), 0, self.timesteps, dtype=jnp.int32)
         noise = jax.random.normal(key_noise, x0.shape, dtype=jnp.float32)
-        return self._compute_loss(x0, cond1, cond2, cond2_mask, noise, t)
+        per = self._compute_loss_per_example(x0, cond1, cond2, cond2_mask, noise, t, denoise_fn=denoise_fn)
+        return per if per_example else jnp.mean(per)
 
     def _resample_impl(self, proposals: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray, cond2_mask: jnp.ndarray, n_timesteps: int, rng: jax.Array, noise_scale: float = 1.0, eta: float = 1.0, sampling_temp: float = 1.0, temp_mode: str = "uniform") -> jnp.ndarray:
         batch_size = proposals.shape[0]
@@ -479,6 +504,209 @@ class GaussianDiffusion(nnx.Module):
         rng: jax.Array,
     ) -> jnp.ndarray:
         return self._loss_impl(x0, cond1, cond2, cond2_mask, rng)
+
+    def loss_per_example(
+        self,
+        x0: jnp.ndarray,
+        cond1: jnp.ndarray,
+        cond2: jnp.ndarray,
+        cond2_mask: jnp.ndarray,
+        *,
+        rng: jax.Array,
+        denoise_fn=None,
+    ) -> jnp.ndarray:
+        """Diffusion loss per batch element, ``[B]`` (mean over channels + time).
+
+        ``loss(...) == loss_per_example(...).mean()`` for the same rng, so this is
+        a drop-in for reward-weighted / filtered fine-tuning where each example
+        carries a different weight. ``denoise_fn`` substitutes the denoiser (e.g.
+        the DPPO-trainable copy for an expert-anchor minibatch).
+        """
+        return self._loss_impl(x0, cond1, cond2, cond2_mask, rng, per_example=True, denoise_fn=denoise_fn)
+
+    # ----------------------------------------------------------------------- #
+    # RL / DPPO support: reverse-transition statistics, log-probabilities, and
+    # a sampler that records the last K' denoising transitions.
+    # ----------------------------------------------------------------------- #
+    _LOG_2PI = float(math.log(2.0 * math.pi))
+
+    def _posterior_mean_std(
+        self, x_t: jnp.ndarray, t: jnp.ndarray, cond1: jnp.ndarray, cond2: jnp.ndarray,
+        cond2_mask: jnp.ndarray, denoise_fn=None,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """DDPM reverse-transition mean and std at step ``t``.
+
+        Returns ``(mean, std, x0_pred)`` where ``x_{t-1} ~ N(mean, std**2 I)``.
+        The mean is the posterior mean ``coef1*x0 + coef2*x_t`` (independent of any
+        exploration-noise floor), and ``std = sqrt(posterior_variance_t)`` (0 at
+        ``t=0``; callers floor it for likelihoods). Equivalent to the eta=1 DDIM
+        update the default sampler uses, so likelihoods are consistent with it.
+        """
+        mean, var, x0_pred = self.p_mean_variance(x_t, t, cond1, cond2, cond2_mask, denoise_fn=denoise_fn)
+        std = jnp.sqrt(jnp.maximum(var, 0.0))
+        return mean, std, x0_pred
+
+    @staticmethod
+    def _gaussian_logdensity(x: jnp.ndarray, mean: jnp.ndarray, std: jnp.ndarray) -> jnp.ndarray:
+        """Elementwise diagonal-Gaussian log density (same shape as ``x``)."""
+        return -0.5 * ((x - mean) / std) ** 2 - jnp.log(std) - 0.5 * GaussianDiffusion._LOG_2PI
+
+    @staticmethod
+    def _reduce_logdensity(ld: jnp.ndarray, prefix_len: int | None) -> jnp.ndarray:
+        """Average a per-element log density over channels and (executed) time.
+
+        ``ld`` is ``[B, C, T]``. We average over channels and time rather than
+        summing all C*T dims, so the PPO ratio stays a sane per-transition scalar
+        (DPPO note: "do not sum all 125 dimensions into one enormous ratio").
+        With ``prefix_len`` set, only the first ``prefix_len`` time points (the
+        executed prefix that receives policy-gradient credit) are averaged.
+        """
+        c = ld.shape[1]
+        t_dim = ld.shape[2]
+        if prefix_len is None:
+            return jnp.mean(ld, axis=(1, 2))
+        pl = int(prefix_len)
+        mask_t = (jnp.arange(t_dim) < pl).astype(ld.dtype)  # [T]
+        summed = jnp.sum(ld * mask_t[None, None, :], axis=(1, 2))
+        return summed / (c * pl)
+
+    def transition_log_prob(
+        self,
+        x_t: jnp.ndarray,
+        x_prev: jnp.ndarray,
+        t: jnp.ndarray,
+        cond1: jnp.ndarray,
+        cond2: jnp.ndarray,
+        cond2_mask: jnp.ndarray,
+        *,
+        sigma_floor: float = 0.1,
+        prefix_len: int | None = None,
+        denoise_fn=None,
+    ) -> jnp.ndarray:
+        """Log-prob of the reverse transition ``x_t -> x_prev`` at step ``t``.
+
+        Converts the current prediction to ``x0`` and then to the posterior mean
+        (see :meth:`_posterior_mean_std`), floors the std at ``sigma_floor`` for a
+        stable likelihood, and averages the Gaussian log density over channels and
+        the executed time prefix. Returns ``[B]``.
+        """
+        mean, std, _ = self._posterior_mean_std(x_t, t, cond1, cond2, cond2_mask, denoise_fn=denoise_fn)
+        std_lp = jnp.maximum(std, sigma_floor)
+        ld = self._gaussian_logdensity(x_prev, mean, std_lp)
+        return self._reduce_logdensity(ld, prefix_len)
+
+    def sample_with_trace(
+        self,
+        shape: Tuple[int, int, int],
+        cond1: jnp.ndarray,
+        cond2: jnp.ndarray,
+        cond2_mask: jnp.ndarray,
+        *,
+        rng: jax.Array,
+        k_trainable: int,
+        trainable_denoise_fn=None,
+        rl_mode: bool = False,
+        sigma_sample_floor: float = 0.0,
+        sigma_logprob_floor: float = 0.1,
+        prefix_len: int | None = None,
+        eta: float = 1.0,
+        sampling_temp: float = 1.0,
+        temp_mode: str = "uniform",
+    ):
+        """Sample and record the last ``k_trainable`` denoising transitions.
+
+        The early ``timesteps - k_trainable`` steps run in a compact ``fori_loop``
+        with the frozen ``self.denoise_fn`` (the default sampler math). The final
+        ``k_trainable`` steps (diffusion timesteps ``k_trainable-1 .. 0``) are
+        unrolled so each transition is recorded, using ``trainable_denoise_fn`` if
+        given (the DPPO-trainable copy) else ``self.denoise_fn``.
+
+        With ``rl_mode=False`` and default settings the produced trajectory is
+        bit-identical to :meth:`sample` under the same rng (Gate 2). With
+        ``rl_mode=True`` the late steps are stochastic Gaussian transitions with an
+        exploration-std floor -- including at ``t=0``, where the default sampler
+        suppresses noise -- matching DPPO's training sampler.
+
+        Returns ``(trajectory, trace)`` where ``trace`` is a dict of arrays stacked
+        over the ``k_trainable`` steps (leading axis K, ordered high-t -> t=0):
+        ``x_t, x_prev, timestep, mean, std, log_prob``.
+        """
+        batch_size = shape[0]
+        num_steps = self.timesteps
+        k = int(k_trainable)
+        if k < 0 or k > num_steps:
+            raise ValueError(f"k_trainable must be in [0, {num_steps}], got {k}.")
+        n_early = num_steps - k
+
+        key_x, key_steps = jax.random.split(rng)
+        x = jax.random.normal(key_x, shape, dtype=jnp.float32)
+        temp_sched = self._temp_schedule(sampling_temp, temp_mode, num_steps)
+
+        # --- early (frozen) steps: compact loop, no trace --------------------- #
+        def body(i, carry):
+            x_curr, key = carry
+            timestep = num_steps - 1 - i
+            t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
+            key, step_key = jax.random.split(key)
+            noise = jax.random.normal(step_key, shape, dtype=jnp.float32)
+            x_next = self.p_sample(
+                x_curr, t, cond1, cond2, cond2_mask, noise,
+                eta=eta, sampling_temp=temp_sched[i],
+            )
+            return x_next, key
+
+        x, key = jax.lax.fori_loop(0, n_early, body, (x, key_steps))
+
+        # --- late (trainable) steps: unrolled, record transitions ------------ #
+        xt_l, xprev_l, t_l, mean_l, std_l, lp_l = [], [], [], [], [], []
+        for j in range(k):
+            i = n_early + j
+            timestep = num_steps - 1 - i  # runs k-1 .. 0
+            t = jnp.full((batch_size,), timestep, dtype=jnp.int32)
+            key, step_key = jax.random.split(key)
+            noise = jax.random.normal(step_key, shape, dtype=jnp.float32)
+            x_in = x
+
+            # ONE denoiser call per step; both the update and the recorded
+            # posterior stats derive from this single prediction (calling the
+            # network twice would perturb the trajectory via its nnx rng streams).
+            mean, _var, x0_pred = self.p_mean_variance(
+                x_in, t, cond1, cond2, cond2_mask, denoise_fn=trainable_denoise_fn
+            )
+            std = jnp.sqrt(jnp.maximum(_var, 0.0))
+
+            if rl_mode:
+                std_s = jnp.maximum(std, sigma_sample_floor)
+                # Exploration noise on every trainable step, including t=0 (the
+                # default sampler suppresses it there); DPPO relies on this.
+                x_out = mean + std_s * noise
+                rec_std = std_s
+            else:
+                # Standard sampler math (bit-identical to sample()).
+                x_out = self._ddim_update(x_in, t, x0_pred, noise, eta=eta, sampling_temp=temp_sched[i])
+                rec_std = std
+
+            std_lp = jnp.maximum(std, sigma_logprob_floor)
+            lp = self._reduce_logdensity(
+                self._gaussian_logdensity(x_out, mean, std_lp), prefix_len
+            )
+
+            xt_l.append(x_in); xprev_l.append(x_out); t_l.append(t)
+            mean_l.append(mean); std_l.append(rec_std); lp_l.append(lp)
+            x = x_out
+
+        def _stack(lst, empty_shape):
+            return jnp.stack(lst, axis=0) if lst else jnp.zeros(empty_shape, dtype=jnp.float32)
+
+        trace = {
+            "x_t": _stack(xt_l, (0,) + tuple(shape)),
+            "x_prev": _stack(xprev_l, (0,) + tuple(shape)),
+            "timestep": jnp.stack(t_l, axis=0) if t_l else jnp.zeros((0, batch_size), jnp.int32),
+            "mean": _stack(mean_l, (0,) + tuple(shape)),
+            "std": _stack(std_l, (0,) + tuple(shape)),
+            "log_prob": jnp.stack(lp_l, axis=0) if lp_l else jnp.zeros((0, batch_size), jnp.float32),
+        }
+        return x, trace
 
     def resample(
         self,

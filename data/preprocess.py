@@ -358,7 +358,12 @@ def _preprocess_single_batch(
 
 
     if goal_step_override is not None:
-        goal_step_b = jnp.full((bsz,), goal_step_override, dtype=jnp.int32)
+        # Accept either a scalar (same goal step for every world) or a per-world
+        # array of shape [bsz] (each scene's real goal timestep). broadcast_to
+        # keeps the scalar path identical to the previous jnp.full behavior.
+        goal_step_b = jnp.broadcast_to(
+            jnp.asarray(goal_step_override, dtype=jnp.int32), (bsz,)
+        )
     else:
         rng, rng_goal = jax.random.split(rng)
         goal_step_b, _ = sample_future_goal_step(ego_valid_bt, anchor_step_b, rng_goal)

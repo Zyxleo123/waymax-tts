@@ -49,15 +49,21 @@ class DiffusionPlanner(AbstractPlanner):
         instruction_mask: jnp.ndarray = None,
         timestep: int = 0,
         mask_goal: bool = False,
+        goal_timestep: jnp.ndarray | int | None = None,
         **kwargs: Any,
     ) -> PlannerResult:
         rng, key_pre, key_sample = jax.random.split(rng, 3)
+        # Use each scene's real goal timestep (its last valid ego log step),
+        # threaded in as `goal_timestep`, instead of a hard-coded constant. The
+        # goal step only sets `remaining_timesteps=(goal_step-anchor)/100` in the
+        # conditioning; a fixed 90 mis-told the policy how much time remained for
+        # every scene whose horizon differed.
         pre_batch, _ = preprocess_simulator_state(
             sim_state,
             key_pre,
             self.preprocess_cfg,
             anchor_step_override=timestep,
-            goal_step_override=90,
+            goal_step_override=goal_timestep,
             goal_xy_override=goal,
         )
         features = pre_batch.features

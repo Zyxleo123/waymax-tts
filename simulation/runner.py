@@ -95,6 +95,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
             replan_interval_steps=int(args.replan_interval_steps),
             instruction_interval_steps=int(args.instruction_interval_steps),
             rng_key=rng_key,
+            goal_timestep=goal_t_b,  # real per-scene goal step (was hard-coded 90)
         )
 
         rollout = rollout_predicted_trajectories_with_metrics(
@@ -120,8 +121,18 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
 
         overlap = np.zeros((len(scenario_indices),), dtype=bool)
         offroad = np.zeros((len(scenario_indices),), dtype=bool)
+        start_t = int(args.start_timestep)
         for world_idx in range(len(scenario_indices)):
-            episode_length = goal_reached_step[world_idx] + 1 if goal_reached[world_idx] else overlap_timeseries.shape[0]
+            # overlap_/offroad_timeseries were sliced with [start_timestep:], so
+            # index 0 corresponds to absolute step `start_timestep`. goal_reached_step
+            # is an ABSOLUTE timestep (check_goal_reaching adds start_timestep), so it
+            # must be shifted back into this relative window; the previous code indexed
+            # the sliced array with the absolute step, truncating ~start_timestep frames
+            # too late and missing early collisions/offroad.
+            if goal_reached[world_idx]:
+                episode_length = int(goal_reached_step[world_idx]) - start_t + 1
+            else:
+                episode_length = overlap_timeseries.shape[0]
             if "overlap" in rollout["metric_timeseries"]:
                 overlap[world_idx] = overlap_timeseries[:episode_length, world_idx].sum() > 0
             if "offroad" in rollout["metric_timeseries"]:
@@ -156,55 +167,42 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
                 _save_json(instruction_path, instruction_data)
 
         if args.visualize_mode == "all":
-            visualize_indices = np.arange(len(scenario_indices))
-            video_requests = [
-                (str(tfrecord_path), int(idx)) for idx in scenario_indices
-            ]
+            visualize_indices = list(range(len(scenario_indices)))
         elif args.visualize_mode == "success":
-            visualize_indices = np.where(success)[0]
-            video_requests = [
-                (str(tfrecord_path), int(scenario_indices[i]))
-                for i in range(len(scenario_indices)) if success[i]
-            ]
+            visualize_indices = [i for i in range(len(scenario_indices)) if success[i]]
         elif args.visualize_mode == "failure":
-            visualize_indices = np.where(~success)[0]
-            video_requests = [
-                (str(tfrecord_path), int(scenario_indices[i]))
-                for i in range(len(scenario_indices)) if not success[i]
-            ]
-        else:
+            visualize_indices = [i for i in range(len(scenario_indices)) if not success[i]]
+        else:  # "none" (or anything else): no videos
             visualize_indices = []
         video_requests = [
             (str(tfrecord_path), int(scenario_indices[i]))
             for i in visualize_indices
         ]
-        ego_start_times = [0 for i in visualize_indices]
+        ego_start_times = [0 for _ in visualize_indices]
         ego_trajectories = [np.asarray(pred_traj[i]) for i in visualize_indices]
-        # ego_indices = get_sdc_indices_for_batched_state(replaced_state)
-        # ego_trajectories = [
-        #     np.asarray(
-        #         jnp.stack(
-        #             [
-        #                 replaced_state.log_trajectory.x[i, int(ego_indices[i]), :],
-        #                 replaced_state.log_trajectory.y[i, int(ego_indices[i]), :],
-        #                 replaced_state.log_trajectory.yaw[i, int(ego_indices[i]), :],
-        #                 replaced_state.log_trajectory.vel_x[i, int(ego_indices[i]), :],
-        #                 replaced_state.log_trajectory.vel_y[i, int(ego_indices[i]), :],
-        #             ], axis=-1
-        #         )
-        #     ) for i in visualize_indices
-        # ]
         goal_xys = [np.asarray(goal_xy_b2[i]) for i in visualize_indices]
+
+        # Map every scenario position to its rendered video path (None when
+        # visualization is disabled or this scenario was not requested).
+        # render_videos_batched returns one path per *request*, aligned to
+        # `visualize_indices` -- not one per scenario -- so indexing it directly
+        # by the scenario loop counter was wrong whenever a subset was rendered
+        # and crashed outright (NameError) when nothing was rendered.
+        video_path_by_pos: dict[int, Any] = {i: None for i in range(len(scenario_indices))}
         if video_requests:
-            video_paths = render_videos_batched(
+            rendered = render_videos_batched(
                 tfrecord_scenarios=video_requests,
-                target_vehicles=[None] * len(scenario_indices),
+                target_vehicles=[None] * len(video_requests),
                 output_dir=output_dir.as_posix(),
                 ego_start_times=ego_start_times,
                 ego_trajectories=ego_trajectories,
                 goal_xy=goal_xys,
             )
+            for pos, path in zip(visualize_indices, rendered):
+                video_path_by_pos[pos] = path
+
         for i, scenario_idx in enumerate(scenario_indices):
+            vp = video_path_by_pos.get(i)
             result = {
                 "scenario_idx": int(scenario_idx),
                 "ego_idx": int(ego_idx_b[i]),
@@ -218,7 +216,7 @@ def run(args, planner: AbstractPlanner) -> list[dict[str, Any]]:
                 "offroad": bool(offroad[i]),
                 "tl_violation": bool(tl_violation[i]),
                 "success": bool(success[i]),
-                "video_path": video_paths[i].as_posix(),
+                "video_path": vp.as_posix() if vp is not None else None,
                 "tfrecord": str(tfrecord_path),
             }
             result_path = output_dir / f"{os.path.basename(tfrecord_path)}.scenario_{scenario_idx:03d}.json"
