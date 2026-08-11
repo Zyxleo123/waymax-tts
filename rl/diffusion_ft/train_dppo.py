@@ -114,6 +114,7 @@ class DPPOTrainer:
             actor_lr=self.args.actor_lr,
             grad_clip_norm=self.args.grad_clip_norm,
             ppo_clip=self.args.ppo_clip,
+            pg_scale=(self.args.pg_scale if self.args.pg_scale > 0 else None),
             seed=self.args.seed,
         )
 
@@ -181,11 +182,11 @@ class DPPOTrainer:
             a = np.asarray(adv_f)[m]
             adv_f = jnp.asarray(((np.asarray(adv_f) - a.mean()) / (a.std() + 1e-8)) * m.astype(np.float32))
         old_lp = trace["log_prob"]  # [K, n*B]
-        return cond1, cond2, mask, trace, old_lp, adv_f, ret_f, expert_target
+        return cond1, cond2, mask, trace, old_lp, adv_f, ret_f, expert_target, alive_f
 
     # --------------------------------------------------------------- #
     def update(self, merged):
-        cond1, cond2, mask, trace, old_lp, adv, ret, expert_target = merged
+        cond1, cond2, mask, trace, old_lp, adv, ret, expert_target, alive = merged
         args = self.args
         last = {}
         for epoch in range(args.ppo_epochs):
@@ -201,8 +202,11 @@ class DPPOTrainer:
             if last["approx_kl"] > args.target_kl:
                 last["stopped_epoch"] = epoch
                 break
-        vloss = self.critic.update(cond1, ret)
+        # Returns from already-terminated envs are meaningless -- mask them out
+        # (adv is masked in `_merge`; ret was not).
+        vloss = self.critic.update(cond1, ret, weights=alive, epochs=args.value_epochs)
         last["value_loss"] = float(np.asarray(vloss["value_loss"]))
+        last["value_loss_final"] = float(np.asarray(vloss["value_loss_final"]))
         return last
 
     # --------------------------------------------------------------- #
@@ -231,9 +235,18 @@ class DPPOTrainer:
             }
             with open(log_path, "a") as f:
                 f.write(json.dumps(row) + "\n")
-            print(f"[dppo] it={it:04d} return={ep_return:.3f} pg={metrics.get('pg_loss',0):.4f} "
-                  f"kl={metrics.get('approx_kl',0):.4f} ratio={metrics.get('mean_ratio',1):.3f} "
-                  f"vloss={metrics.get('value_loss',0):.3f} t={row['time_s']}s")
+            # Fixed-point formats rounded pg/kl/(ratio-1) to zero and hid the fact
+            # that the gradient was nonzero all along -- keep these in scientific
+            # notation, and show the pg-vs-expert split that decides what the
+            # gradient is actually optimizing.
+            print(f"[dppo] it={it:04d} return={ep_return:.3f} "
+                  f"pg={metrics.get('pg_loss',0):+.3e} exp={metrics.get('expert_term',0):.3e} "
+                  f"gnorm={metrics.get('grad_global_norm',0):.4f} "
+                  f"kl={metrics.get('approx_kl',0):+.3e} "
+                  f"ratio-1={metrics.get('mean_ratio',1)-1:+.3e} "
+                  f"clipf={metrics.get('clip_frac',0):.3f} "
+                  f"vloss={metrics.get('value_loss',0):.1f}->{metrics.get('value_loss_final',0):.1f} "
+                  f"t={row['time_s']}s")
             if (it + 1) % args.save_every == 0 or it + 1 == args.iters:
                 self.save(out_dir / f"ckpt_{it+1:04d}")
         print(f"[dppo] done -> {out_dir}")
@@ -269,13 +282,18 @@ def build_argparser() -> argparse.ArgumentParser:
     # PPO
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae_lambda", type=float, default=0.95)
-    p.add_argument("--ppo_clip", type=float, default=0.01)
+    p.add_argument("--ppo_clip", type=float, default=0.1)
     p.add_argument("--ppo_epochs", type=int, default=4)
     p.add_argument("--target_kl", type=float, default=0.05)
-    p.add_argument("--actor_lr", type=float, default=1e-5)
+    p.add_argument("--actor_lr", type=float, default=1e-4)
     p.add_argument("--value_lr", type=float, default=1e-3)
+    p.add_argument("--value_epochs", type=int, default=10,
+                   help="critic gradient steps per iteration (1 cannot track the GAE target)")
+    p.add_argument("--pg_scale", type=float, default=0.0,
+                   help="0 = auto (channels*prefix_len), undoing the log-density averaging")
     p.add_argument("--grad_clip_norm", type=float, default=1.0)
-    p.add_argument("--expert_weight", type=float, default=0.0, help=">0 enables the expert anchor")
+    p.add_argument("--expert_weight", type=float, default=0.0,
+                   help=">0 enables the expert anchor; ~0.001-0.01 (0.1 swamps the PG term)")
     return p
 
 

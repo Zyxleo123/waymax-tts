@@ -9,8 +9,9 @@
 #   DFT_ITERS=2 DFT_INDICES=0,1 bash rl/diffusion_ft/slurm/submit_train_dppo.sh
 #   # overfit test (8 scenes):
 #   bash rl/diffusion_ft/slurm/submit_train_dppo.sh
-#   # DPPO + expert anchor:
-#   DFT_EXPERT_WEIGHT=0.1 bash rl/diffusion_ft/slurm/submit_train_dppo.sh
+#   # DPPO + expert anchor. Keep the weight small: at 0.1 the anchor was ~1000x
+#   # the PG term and the run was behavior cloning with PPO as a rounding error.
+#   DFT_EXPERT_WEIGHT=0.01 bash rl/diffusion_ft/slurm/submit_train_dppo.sh
 set -euo pipefail
 
 ROOT="${SLURM_SUBMIT_DIR:-/zfsauton2/home/yixiz/waymax_rs}"
@@ -28,7 +29,10 @@ ENV_FILE="$ENV_DIR/dppo_${STAMP}.env"
   echo "DFT_EXPERT_WEIGHT=${DFT_EXPERT_WEIGHT:-0.0}"
   echo "DFT_K_TRAINABLE=${DFT_K_TRAINABLE:-10}"
   echo "DFT_PREFIX_LEN=${DFT_PREFIX_LEN:-5}"
-  echo "DFT_ACTOR_LR=${DFT_ACTOR_LR:-1e-5}"
+  echo "DFT_ACTOR_LR=${DFT_ACTOR_LR:-1e-4}"
+  echo "DFT_PPO_CLIP=${DFT_PPO_CLIP:-0.1}"
+  echo "DFT_VALUE_EPOCHS=${DFT_VALUE_EPOCHS:-10}"
+  echo "DFT_PG_SCALE=${DFT_PG_SCALE:-0}"
   echo "DFT_SEED=${DFT_SEED:-0}"
   echo "DFT_OUT_DIR=${DFT_OUT_DIR:-/zfsauton/scratch/yixiz/waymax_rs/diffusion_ft/dppo}"
 } > "$ENV_FILE"

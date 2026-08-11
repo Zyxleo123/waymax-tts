@@ -56,17 +56,38 @@ class ValueCritic:
         """Predict ``V(s)`` ``[B]`` from scene tokens (no gradient tracked)."""
         return self._apply(self._params, pool_condition(cond1))
 
-    def update(self, cond1: jnp.ndarray, returns_b: jnp.ndarray) -> dict[str, Any]:
+    def update(self, cond1: jnp.ndarray, returns_b: jnp.ndarray, *,
+               weights: jnp.ndarray | None = None, epochs: int = 1) -> dict[str, Any]:
+        """Fit ``V`` to ``returns_b`` for ``epochs`` gradient steps.
+
+        ``weights`` is an optional ``[B]`` 0/1 mask (the ``alive`` flags): steps
+        from already-terminated environments carry meaningless returns and must
+        not be regressed on. The MSE is normalized by the weight mass, so masking
+        does not silently shrink the gradient.
+
+        A single step per iteration cannot track the target while the critic is
+        still far from correct -- the GAE targets inflate faster than V rises --
+        so this defaults to being called with ``epochs`` > 1.
+        """
         feat = pool_condition(cond1)
+        w = jnp.ones_like(returns_b) if weights is None else weights.astype(returns_b.dtype)
+        w_sum = jnp.maximum(jnp.sum(w), 1.0)
 
         def loss_fn(params):
             pred = self._apply(params, feat)
-            return jnp.mean((pred - returns_b) ** 2)
+            return jnp.sum(w * (pred - returns_b) ** 2) / w_sum
 
-        loss, grads = jax.value_and_grad(loss_fn)(self._params)
-        updates, self._opt_state = self.tx.update(grads, self._opt_state, self._params)
-        self._params = optax.apply_updates(self._params, updates)
-        return {"value_loss": loss}
+        first = None
+        loss = jnp.asarray(0.0)
+        for _ in range(max(1, int(epochs))):
+            loss, grads = jax.value_and_grad(loss_fn)(self._params)
+            updates, self._opt_state = self.tx.update(grads, self._opt_state, self._params)
+            self._params = optax.apply_updates(self._params, updates)
+            if first is None:
+                first = loss
+        # `value_loss` stays the pre-update fit (comparable across iterations);
+        # `value_loss_final` shows whether the extra epochs actually helped.
+        return {"value_loss": first, "value_loss_final": loss}
 
     def state_dict(self) -> dict[str, Any]:
         return {"params": self._params, "opt_state": self._opt_state}

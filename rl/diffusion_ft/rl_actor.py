@@ -55,9 +55,10 @@ class DiffusionRLActor:
         prefix_len: int | None = None,
         sigma_sample_floor: float = 0.05,
         sigma_logprob_floor: float = 0.1,
-        actor_lr: float = 1e-5,
+        actor_lr: float = 1e-4,
         grad_clip_norm: float = 1.0,
-        ppo_clip: float = 0.01,
+        ppo_clip: float = 0.1,
+        pg_scale: float | None = None,
         seed: int = 0,
     ):
         self.diffusion = diffusion
@@ -66,6 +67,11 @@ class DiffusionRLActor:
         self.sigma_sample_floor = float(sigma_sample_floor)
         self.sigma_logprob_floor = float(sigma_logprob_floor)
         self.ppo_clip = float(ppo_clip)
+        # `None` = auto: undo the 1/(channels*prefix_len) averaging that
+        # `_reduce_logdensity` applies, so the policy-gradient term is comparable
+        # in magnitude to the (unscaled) expert diffusion loss. Resolved on the
+        # first `ppo_update` once the trace shape is known.
+        self.pg_scale = None if pg_scale is None else float(pg_scale)
         self._rng = jax.random.PRNGKey(int(seed))
 
         # Frozen base denoiser = the diffusion's own denoise_fn (never updated).
@@ -147,7 +153,13 @@ class DiffusionRLActor:
         unclipped = ratio * adv
         clipped = jnp.clip(ratio, 1.0 - self.ppo_clip, 1.0 + self.ppo_clip) * adv
         surrogate = jnp.minimum(unclipped, clipped)
-        pg_loss = -jnp.mean(surrogate)
+        # `_reduce_logdensity` averages the per-element log density over
+        # channels*prefix_len, which keeps `ratio` near 1 (intended) but shrinks
+        # the PG gradient by that same factor. `pg_scale` restores it so the PG
+        # term is not swamped by the expert anchor; the clip still acts on the
+        # un-scaled ratio, so the trust region is unchanged.
+        pg_raw = -jnp.mean(surrogate)
+        pg_loss = self.pg_scale * pg_raw
         approx_kl = jnp.mean(old_log_probs_kb - new_lp)
         # `expert` is a Python-level None-or-tuple at trace time, so a plain branch
         # is correct (and keeps the expert forward out of the graph when unused).
@@ -155,9 +167,12 @@ class DiffusionRLActor:
             expert_loss = self._expert_loss(params, expert)
         else:
             expert_loss = jnp.asarray(0.0, dtype=jnp.float32)
-        loss = pg_loss + expert_weight * expert_loss
-        return loss, {"loss": loss, "pg_loss": pg_loss, "expert_loss": expert_loss,
-                      "approx_kl": approx_kl, "mean_ratio": jnp.mean(ratio)}
+        expert_term = expert_weight * expert_loss
+        loss = pg_loss + expert_term
+        return loss, {"loss": loss, "pg_loss": pg_loss, "pg_raw": pg_raw,
+                      "expert_loss": expert_loss, "expert_term": expert_term,
+                      "approx_kl": approx_kl, "mean_ratio": jnp.mean(ratio),
+                      "clip_frac": jnp.mean((jnp.abs(ratio - 1.0) > self.ppo_clip).astype(jnp.float32))}
 
     def ppo_update(self, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
                    *, expert=None, expert_weight=0.0):
@@ -166,6 +181,12 @@ class DiffusionRLActor:
         With ``expert`` given, adds ``expert_weight`` * (expert diffusion loss) --
         the DPPO + expert-anchor variant.
         """
+        if self.pg_scale is None:
+            # trace["x_t"] is [K, B, C, T]; the log density was averaged over
+            # C and the executed prefix (or all of T when prefix_len is None).
+            _, _, c, t_dim = trace["x_t"].shape
+            pl = t_dim if self.prefix_len is None else int(self.prefix_len)
+            self.pg_scale = float(int(c) * pl)
         (loss, metrics), grads = jax.value_and_grad(self._ppo_loss, has_aux=True)(
             self._tparams, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
             expert, expert_weight,
