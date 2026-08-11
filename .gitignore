@@ -20,6 +20,12 @@ program_search_modules_design.md
 
 # tests
 tests/
+# ...but the DPPO gate tests ARE the reproducibility contract for the diffusion
+# fine-tuning pipeline (Gate 1/2/2b); keep them tracked. Un-ignore the dir first,
+# then its contents (git cannot re-include a file under an ignored directory).
+!rl/diffusion_ft/tests/
+!rl/diffusion_ft/tests/*.py
+rl/diffusion_ft/tests/__pycache__/
 
 # benchmarks
 benchmarks/
