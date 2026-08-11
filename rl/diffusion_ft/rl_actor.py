@@ -134,6 +134,28 @@ class DiffusionRLActor:
         return traj, trace
 
     # ------------------------------------------------------------------ #
+    def act(self, cond1, cond2, cond2_mask, *, rng, deterministic: bool = False):
+        """Sample a trajectory for *evaluation* only (no trace, no training).
+
+        ``deterministic=True`` runs the standard (non-RL) sampler over the
+        trainable late steps -- the trajectory the fine-tuned policy would emit at
+        deployment, with no exploration-floor inflation. ``deterministic=False``
+        draws from the same stochastic policy PPO optimizes. Both are reproducible
+        for a fixed ``rng``.
+        """
+        shape = (cond1.shape[0], self.diffusion.denoise_fn.in_ch, self.diffusion.denoise_fn.horizon)
+        traj, _ = self.diffusion.sample_with_trace(
+            shape, cond1, cond2, cond2_mask, rng=rng,
+            k_trainable=self.k_trainable,
+            trainable_denoise_fn=self._trainable_fn(self._tparams),
+            rl_mode=not deterministic,
+            sigma_sample_floor=self.sigma_sample_floor,
+            sigma_logprob_floor=self.sigma_logprob_floor,
+            prefix_len=self.prefix_len,
+        )
+        return traj
+
+    # ------------------------------------------------------------------ #
     def log_probs(self, params, cond1, cond2, cond2_mask, trace):
         """Per-step transition log-probs ``[K, B]`` under a given params pytree."""
         fn = self._trainable_fn(params)
@@ -164,7 +186,8 @@ class DiffusionRLActor:
     def _ppo_loss(self, params, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
                   expert=None, expert_weight=0.0):
         new_lp = self.log_probs(params, cond1, cond2, cond2_mask, trace)  # [K, B]
-        ratio = jnp.exp(new_lp - old_log_probs_kb)                        # [K, B]
+        log_ratio = new_lp - old_log_probs_kb                             # [K, B]
+        ratio = jnp.exp(log_ratio)                                        # [K, B]
         adv = adv_b[None, :]                                              # [1, B]
         unclipped = ratio * adv
         clipped = jnp.clip(ratio, 1.0 - self.ppo_clip, 1.0 + self.ppo_clip) * adv
@@ -176,7 +199,16 @@ class DiffusionRLActor:
         # un-scaled ratio, so the trust region is unchanged.
         pg_raw = -jnp.mean(surrogate)
         pg_loss = self.pg_scale * pg_raw
-        approx_kl = jnp.mean(old_log_probs_kb - new_lp)
+        # Schulman's nonnegative KL estimator `ratio - 1 - log(ratio)` -- always
+        # >= 0 and lower-variance than the raw `old - new` difference, which can
+        # go negative and mislead the early-stop gate.
+        approx_kl = jnp.mean(ratio - 1.0 - log_ratio)
+        # `ratio` above is on the *averaged* log density (what the clip sees). The
+        # per-transition ratio compounds over all `reduce_n` coordinates, so report
+        # the trust region as the policy actually moves it: log_ratio * reduce_n.
+        lr_t = log_ratio * self._reduce_n
+        ratio_t = jnp.exp(lr_t)
+        approx_kl_transition = jnp.mean(ratio_t - 1.0 - lr_t)
         # `expert` is a Python-level None-or-tuple at trace time, so a plain branch
         # is correct (and keeps the expert forward out of the graph when unused).
         if expert is not None:
@@ -187,30 +219,42 @@ class DiffusionRLActor:
         loss = pg_loss + expert_term
         return loss, {"loss": loss, "pg_loss": pg_loss, "pg_raw": pg_raw,
                       "expert_loss": expert_loss, "expert_term": expert_term,
-                      "approx_kl": approx_kl, "mean_ratio": jnp.mean(ratio),
+                      "approx_kl": approx_kl, "approx_kl_transition": approx_kl_transition,
+                      "mean_ratio": jnp.mean(ratio), "mean_ratio_transition": jnp.mean(ratio_t),
                       "clip_frac": jnp.mean((jnp.abs(ratio - 1.0) > self.ppo_clip).astype(jnp.float32))}
 
     def ppo_update(self, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
-                   *, expert=None, expert_weight=0.0):
+                   *, expert=None, expert_weight=0.0, target_kl=None):
         """One clipped-PPO gradient step on the trainable denoiser only.
 
         With ``expert`` given, adds ``expert_weight`` * (expert diffusion loss) --
         the DPPO + expert-anchor variant.
+
+        The loss (and its metrics) is evaluated at the *current* params, i.e. the
+        drift accumulated by prior epochs. When ``target_kl`` is given and that
+        pre-update ``approx_kl`` already exceeds it, the gradient step is skipped
+        and ``metrics["applied"] == 0.0`` -- so the caller stops *before* taking
+        the step that crosses the trust region, not one step after.
         """
-        if self.pg_scale is None:
+        if self.pg_scale is None or self._reduce_n is None:
             # trace["x_t"] is [K, B, C, T]; the log density was averaged over
             # C and the executed prefix (or all of T when prefix_len is None).
             _, _, c, t_dim = trace["x_t"].shape
             pl = t_dim if self.prefix_len is None else int(self.prefix_len)
-            self.pg_scale = float(int(c) * pl)
+            self._reduce_n = float(int(c) * pl)
+            if self.pg_scale is None:
+                self.pg_scale = self._reduce_n
         (loss, metrics), grads = jax.value_and_grad(self._ppo_loss, has_aux=True)(
             self._tparams, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
             expert, expert_weight,
         )
-        updates, self._opt_state = self.tx.update(grads, self._opt_state, self._tparams)
-        self._tparams = optax.apply_updates(self._tparams, updates)
         metrics = dict(metrics)
+        applied = target_kl is None or float(np.asarray(metrics["approx_kl"])) <= float(target_kl)
+        if applied:
+            updates, self._opt_state = self.tx.update(grads, self._opt_state, self._tparams)
+            self._tparams = optax.apply_updates(self._tparams, updates)
         metrics["grad_global_norm"] = optax.global_norm(grads)
+        metrics["applied"] = jnp.asarray(1.0 if applied else 0.0, dtype=jnp.float32)
         return metrics
 
     # ------------------------------------------------------------------ #

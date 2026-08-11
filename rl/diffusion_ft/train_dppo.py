@@ -120,7 +120,8 @@ class DPPOTrainer:
             return
         self.env = DiffusionWaymaxEnv(
             self.ckpt, reward_config=RewardConfig(), max_num_objects=n_obj,
-            use_ema=False, replan_interval_steps=self.args.replan_interval_steps, seed=self.args.seed,
+            use_ema=self.args.use_ema,
+            replan_interval_steps=self.args.replan_interval_steps, seed=self.args.seed,
         )
         self.actor = DiffusionRLActor(
             self.env.policy.diffusion,
@@ -217,17 +218,54 @@ class DPPOTrainer:
             m = self.actor.ppo_update(
                 cond1, cond2, mask, trace, old_lp, adv,
                 expert=expert, expert_weight=args.expert_weight,
+                target_kl=args.target_kl,
             )
-            last = {k: float(np.asarray(v)) for k, v in m.items()}
-            if last["approx_kl"] > args.target_kl:
+            m = {k: float(np.asarray(v)) for k, v in m.items()}
+            if m["applied"] < 0.5:
+                # The step that would have crossed target_kl was declined inside
+                # ppo_update; keep the last *applied* epoch's metrics and stop.
                 last["stopped_epoch"] = epoch
                 break
+            last = m
         # Returns from already-terminated envs are meaningless -- mask them out
         # (adv is masked in `_merge`; ret was not).
         vloss = self.critic.update(cond1, ret, weights=alive, epochs=args.value_epochs)
         last["value_loss"] = float(np.asarray(vloss["value_loss"]))
         last["value_loss_final"] = float(np.asarray(vloss["value_loss_final"]))
         return last
+
+    # --------------------------------------------------------------- #
+    def evaluate(self, state, *, deterministic: bool, seed_offset: int) -> float:
+        """Roll one batched episode with a *fixed* rng (no training) and return
+        the mean episode return.
+
+        Stochastic eval (``deterministic=False``) samples from the same policy PPO
+        optimizes; deterministic eval runs the standard sampler over the trainable
+        late steps -- the deployment trajectory, free of exploration-floor jitter.
+        A fixed seed makes both comparable across iterations, so an improvement is
+        the policy moving, not the noise landing differently.
+        """
+        env, actor = self.env, self.actor
+        features = env.reset(state)
+        horizon = int(jnp.asarray(env.sim_state.log_trajectory.x).shape[-1])
+        n_steps = self.args.max_replans or ((horizon - env.timestep) // self.args.replan_interval_steps)
+        rng = jax.random.PRNGKey(int(self.args.seed) + int(seed_offset))
+        B = env.batch_size
+        prev_done = np.zeros(B, dtype=bool)
+        ret = np.zeros(B, dtype=np.float64)
+        for _ in range(int(n_steps)):
+            cond1, cond2 = env.compute_condition(features)
+            mask = features["inst_valid"]
+            rng, krng = jax.random.split(rng)
+            traj_ncT = actor.act(cond1, cond2, mask, rng=krng, deterministic=deterministic)
+            world = env.norm_to_world(jnp.transpose(traj_ncT, (0, 2, 1)))
+            out = env.step(trajectory_world_bt5=world)
+            ret += np.asarray(out.reward_b) * (~prev_done)
+            prev_done = prev_done | np.asarray(out.terminated_b) | np.asarray(out.truncated_b)
+            features = out.features
+            if prev_done.all():
+                break
+        return float(ret.mean())
 
     # --------------------------------------------------------------- #
     def train(self):
@@ -247,22 +285,32 @@ class DPPOTrainer:
             merged = self._merge(buf, adv, returns, alive)
             metrics = self.update(merged)
             ep_return = float(np.sum(rewards, axis=0).mean())
+            eval_row: dict[str, float] = {}
+            if args.eval_every > 0 and (it % args.eval_every == 0 or it + 1 == args.iters):
+                eval_row["eval_return_stochastic"] = self.evaluate(
+                    state, deterministic=False, seed_offset=777)
+                eval_row["eval_return_deterministic"] = self.evaluate(
+                    state, deterministic=True, seed_offset=778)
             row = {
                 "iter": it, "mean_episode_return": ep_return,
                 "mean_return_to_go": float(returns.mean()),
                 "n_steps": len(buf["cond1"]), "time_s": round(time.time() - t0, 2),
-                **metrics,
+                **metrics, **eval_row,
             }
             with open(log_path, "a") as f:
                 f.write(json.dumps(row) + "\n")
             # Fixed-point formats rounded pg/kl/(ratio-1) to zero and hid the fact
             # that the gradient was nonzero all along -- keep these in scientific
             # notation, and show the pg-vs-expert split that decides what the
-            # gradient is actually optimizing.
-            print(f"[dppo] it={it:04d} return={ep_return:.3f} "
+            # gradient is actually optimizing. Report both the averaged KL (what
+            # the clip acts on) and the per-transition KL (the real trust region).
+            eval_str = (f"eval[s/d]={eval_row['eval_return_stochastic']:.3f}/"
+                        f"{eval_row['eval_return_deterministic']:.3f} " if eval_row else "")
+            print(f"[dppo] it={it:04d} return={ep_return:.3f} {eval_str}"
                   f"pg={metrics.get('pg_loss',0):+.3e} exp={metrics.get('expert_term',0):.3e} "
                   f"gnorm={metrics.get('grad_global_norm',0):.4f} "
-                  f"kl={metrics.get('approx_kl',0):+.3e} "
+                  f"kl={metrics.get('approx_kl',0):.3e} "
+                  f"kl_tx={metrics.get('approx_kl_transition',0):.3e} "
                   f"ratio-1={metrics.get('mean_ratio',1)-1:+.3e} "
                   f"clipf={metrics.get('clip_frac',0):.3f} "
                   f"vloss={metrics.get('value_loss',0):.1f}->{metrics.get('value_loss_final',0):.1f} "
@@ -297,14 +345,26 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--prefix_len", type=int, default=5)
     p.add_argument("--replan_interval_steps", type=int, default=10)
     p.add_argument("--max_replans", type=int, default=0, help="0 = run to horizon")
-    p.add_argument("--sigma_sample_floor", type=float, default=0.05)
+    # Sampling and log-prob MUST use the same floor -- the actor enforces it. A
+    # smaller sample floor made every recorded action off-policy w.r.t. the
+    # density PPO optimizes; keeping them equal is a correctness requirement, not
+    # a tuning knob.
+    p.add_argument("--sigma_sample_floor", type=float, default=0.1)
     p.add_argument("--sigma_logprob_floor", type=float, default=0.1)
+    p.add_argument("--use_ema", action=argparse.BooleanOptionalAction, default=True,
+                   help="init the frozen base + trainable copy from EMA weights -- "
+                        "the actual evaluated baseline (use --no-use_ema for raw)")
+    p.add_argument("--eval_every", type=int, default=5,
+                   help="fixed-seed stochastic+deterministic eval cadence (0 = off)")
     # PPO
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae_lambda", type=float, default=1.0,
                    help="1.0 = Monte-Carlo advantage (critic is a baseline only, not a "
                         "bootstrap); episodes here are ~8 replan steps, so MC is cheap")
-    p.add_argument("--ppo_clip", type=float, default=0.1)
+    p.add_argument("--ppo_clip", type=float, default=0.01,
+                   help="clip acts on the *averaged* log-density ratio; a per-"
+                        "transition ratio compounds this over channels*prefix, so "
+                        "start tight (~0.01) and watch kl_tx")
     p.add_argument("--ppo_epochs", type=int, default=4)
     p.add_argument("--target_kl", type=float, default=0.05)
     p.add_argument("--actor_lr", type=float, default=3e-5)
