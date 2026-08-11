@@ -53,7 +53,7 @@ class DiffusionRLActor:
         *,
         k_trainable: int = 10,
         prefix_len: int | None = None,
-        sigma_sample_floor: float = 0.05,
+        sigma_sample_floor: float = 0.1,
         sigma_logprob_floor: float = 0.1,
         actor_lr: float = 3e-5,
         grad_clip_norm: float = 1.0,
@@ -66,12 +66,28 @@ class DiffusionRLActor:
         self.prefix_len = prefix_len
         self.sigma_sample_floor = float(sigma_sample_floor)
         self.sigma_logprob_floor = float(sigma_logprob_floor)
+        # PPO requires the behavior policy (what `sample_with_trace` draws from)
+        # and the density the ratio is computed under to be the *same* Gaussian.
+        # A smaller sample floor than log-prob floor makes every recorded action
+        # off-policy w.r.t. the density being optimized, biasing the gradient with
+        # no importance correction. Enforce equality rather than silently mixing.
+        if abs(self.sigma_sample_floor - self.sigma_logprob_floor) > 1e-9:
+            raise ValueError(
+                "sigma_sample_floor and sigma_logprob_floor must be equal "
+                f"(got {self.sigma_sample_floor} vs {self.sigma_logprob_floor}); "
+                "sampling and log-prob must describe the same policy."
+            )
         self.ppo_clip = float(ppo_clip)
         # `None` = auto: undo the 1/(channels*prefix_len) averaging that
         # `_reduce_logdensity` applies, so the policy-gradient term is comparable
         # in magnitude to the (unscaled) expert diffusion loss. Resolved on the
         # first `ppo_update` once the trace shape is known.
         self.pg_scale = None if pg_scale is None else float(pg_scale)
+        # The number of scalar log-densities `_reduce_logdensity` averages over
+        # (channels * executed prefix). Recorded so the reported per-transition
+        # KL/ratio can be recovered from the averaged quantity that PPO clips on.
+        # Resolved alongside `pg_scale` on the first `ppo_update`.
+        self._reduce_n: float | None = None
         self._rng = jax.random.PRNGKey(int(seed))
 
         # Frozen base denoiser = the diffusion's own denoise_fn (never updated).
