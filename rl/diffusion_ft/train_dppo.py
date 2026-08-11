@@ -65,8 +65,15 @@ def load_batch(tfr: str, indices: list[int]):
     return jax.tree_util.tree_map(lambda x: jnp.asarray(x)[order], state)
 
 
-def compute_gae(rewards, values, terminated, last_value, gamma, lam):
+def compute_gae(rewards, values, done, last_value, gamma, lam):
     """GAE over ``[n_steps, B]`` env-step rewards. Returns (adv, returns).
+
+    ``done`` is ``terminated | truncated``: both a real terminal (goal/crash) and
+    the WOMD horizon cut-off end the finite-horizon return, so neither bootstraps
+    the critic. This is what makes ``lam=1`` a genuine Monte-Carlo advantage --
+    treating the horizon truncation as non-terminal (bootstrapping ``V(s_H)``)
+    would leave the critic in the return path for exactly the scenes that end by
+    reaching the horizon, i.e. almost all of them, defeating the intent.
 
     At ``lam=1`` this degenerates to the Monte-Carlo advantage: ``adv`` is the
     observed discounted return minus ``V(s_t)``, and ``returns`` is the observed
@@ -81,7 +88,7 @@ def compute_gae(rewards, values, terminated, last_value, gamma, lam):
     adv = np.zeros((n, B), dtype=np.float64)
     lastgae = np.zeros(B, dtype=np.float64)
     for t in reversed(range(n)):
-        nextnonterm = 1.0 - terminated[t]
+        nextnonterm = 1.0 - done[t]
         nextval = last_value if t == n - 1 else values[t + 1]
         delta = rewards[t] + gamma * nextval * nextnonterm - values[t]
         lastgae = delta + gamma * lam * nextnonterm * lastgae
@@ -138,7 +145,7 @@ class DPPOTrainer:
         n_steps = self.args.max_replans or ((horizon - env.timestep) // self.args.replan_interval_steps)
 
         buf = {k: [] for k in ("cond1", "cond2", "mask", "trace", "expert_target",
-                               "reward", "value", "terminated", "alive")}
+                               "reward", "value", "done", "alive")}
         prev_done = np.zeros(B, dtype=bool)
 
         for _ in range(int(n_steps)):
@@ -155,9 +162,12 @@ class DPPOTrainer:
 
             out = env.step(trajectory_world_bt5=world)
             buf["reward"].append(np.asarray(out.reward_b))
-            term = np.asarray(out.terminated_b)
-            buf["terminated"].append(term)
-            prev_done = prev_done | term | np.asarray(out.truncated_b)
+            # `done` = terminated | truncated: the horizon cut-off ends the
+            # finite-horizon return just as a real terminal does, so GAE must not
+            # bootstrap past it (see `compute_gae`).
+            done = np.asarray(out.terminated_b) | np.asarray(out.truncated_b)
+            buf["done"].append(done)
+            prev_done = prev_done | done
             features = out.features
             if prev_done.all():
                 break
@@ -167,8 +177,8 @@ class DPPOTrainer:
 
         rewards = np.stack(buf["reward"], 0)
         values = np.stack(buf["value"], 0)
-        terminated = np.stack(buf["terminated"], 0).astype(np.float64)
-        adv, returns = compute_gae(rewards, values, terminated, last_value,
+        done = np.stack(buf["done"], 0).astype(np.float64)
+        adv, returns = compute_gae(rewards, values, done, last_value,
                                    self.args.gamma, self.args.gae_lambda)
         alive = np.stack(buf["alive"], 0)  # [n, B]
         return buf, adv, returns, alive, rewards
