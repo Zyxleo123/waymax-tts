@@ -19,7 +19,10 @@ cd "$ROOT"
 ENV_DIR="$ROOT/logs/dft/env"
 mkdir -p "$ENV_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-ENV_FILE="$ENV_DIR/dppo_${STAMP}.env"
+# Name the env file after the job so two arms submitted close together cannot
+# end up sharing one config (27647/27648 both ran expert_weight=0.01 and were
+# accidental duplicates rather than a pure-vs-anchor comparison).
+ENV_FILE="$ENV_DIR/dppo_${DFT_JOBNAME:-dft_dppo}_${STAMP}.env"
 
 {
   echo "DFT_CKPT=${DFT_CKPT:-/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_diffusion/pretrain_diffusion_without_subgoal_20260616_013642/latest}"
@@ -29,8 +32,10 @@ ENV_FILE="$ENV_DIR/dppo_${STAMP}.env"
   echo "DFT_EXPERT_WEIGHT=${DFT_EXPERT_WEIGHT:-0.0}"
   echo "DFT_K_TRAINABLE=${DFT_K_TRAINABLE:-10}"
   echo "DFT_PREFIX_LEN=${DFT_PREFIX_LEN:-5}"
-  echo "DFT_ACTOR_LR=${DFT_ACTOR_LR:-1e-4}"
+  echo "DFT_ACTOR_LR=${DFT_ACTOR_LR:-3e-5}"
   echo "DFT_PPO_CLIP=${DFT_PPO_CLIP:-0.1}"
+  echo "DFT_GAE_LAMBDA=${DFT_GAE_LAMBDA:-1.0}"
+  echo "DFT_PPO_EPOCHS=${DFT_PPO_EPOCHS:-4}"
   echo "DFT_VALUE_EPOCHS=${DFT_VALUE_EPOCHS:-10}"
   echo "DFT_PG_SCALE=${DFT_PG_SCALE:-0}"
   echo "DFT_SEED=${DFT_SEED:-0}"

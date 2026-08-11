@@ -66,7 +66,17 @@ def load_batch(tfr: str, indices: list[int]):
 
 
 def compute_gae(rewards, values, terminated, last_value, gamma, lam):
-    """GAE over ``[n_steps, B]`` env-step rewards. Returns (adv, returns)."""
+    """GAE over ``[n_steps, B]`` env-step rewards. Returns (adv, returns).
+
+    At ``lam=1`` this degenerates to the Monte-Carlo advantage: ``adv`` is the
+    observed discounted return minus ``V(s_t)``, and ``returns`` is the observed
+    discounted return alone. That matters here because ``returns = adv + values``
+    is otherwise self-referential -- with a critic that under-predicts, the GAE
+    deltas are large and positive, the targets inflate, and the critic chases a
+    target it is itself pushing away (observed: return-to-go 8 -> 38 -> 86 while
+    the true episode return stayed ~20). At ``lam=1`` the target is bounded by
+    the rewards actually collected, so a bad critic costs variance, not drift.
+    """
     n, B = rewards.shape
     adv = np.zeros((n, B), dtype=np.float64)
     lastgae = np.zeros(B, dtype=np.float64)
@@ -281,11 +291,13 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--sigma_logprob_floor", type=float, default=0.1)
     # PPO
     p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument("--gae_lambda", type=float, default=0.95)
+    p.add_argument("--gae_lambda", type=float, default=1.0,
+                   help="1.0 = Monte-Carlo advantage (critic is a baseline only, not a "
+                        "bootstrap); episodes here are ~8 replan steps, so MC is cheap")
     p.add_argument("--ppo_clip", type=float, default=0.1)
     p.add_argument("--ppo_epochs", type=int, default=4)
     p.add_argument("--target_kl", type=float, default=0.05)
-    p.add_argument("--actor_lr", type=float, default=1e-4)
+    p.add_argument("--actor_lr", type=float, default=3e-5)
     p.add_argument("--value_lr", type=float, default=1e-3)
     p.add_argument("--value_epochs", type=int, default=10,
                    help="critic gradient steps per iteration (1 cannot track the GAE target)")

@@ -55,7 +55,7 @@ class DiffusionRLActor:
         prefix_len: int | None = None,
         sigma_sample_floor: float = 0.05,
         sigma_logprob_floor: float = 0.1,
-        actor_lr: float = 1e-4,
+        actor_lr: float = 3e-5,
         grad_clip_norm: float = 1.0,
         ppo_clip: float = 0.1,
         pg_scale: float | None = None,

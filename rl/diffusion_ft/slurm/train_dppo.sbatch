@@ -43,8 +43,10 @@ DFT_ITERS="${DFT_ITERS:-50}"
 DFT_EXPERT_WEIGHT="${DFT_EXPERT_WEIGHT:-0.0}"
 DFT_K_TRAINABLE="${DFT_K_TRAINABLE:-10}"
 DFT_PREFIX_LEN="${DFT_PREFIX_LEN:-5}"
-DFT_ACTOR_LR="${DFT_ACTOR_LR:-1e-4}"
+DFT_ACTOR_LR="${DFT_ACTOR_LR:-3e-5}"
 DFT_PPO_CLIP="${DFT_PPO_CLIP:-0.1}"
+DFT_GAE_LAMBDA="${DFT_GAE_LAMBDA:-1.0}"   # 1.0 = Monte-Carlo advantage
+DFT_PPO_EPOCHS="${DFT_PPO_EPOCHS:-4}"
 DFT_VALUE_EPOCHS="${DFT_VALUE_EPOCHS:-10}"
 DFT_PG_SCALE="${DFT_PG_SCALE:-0}"   # 0 = auto (channels*prefix_len)
 DFT_SEED="${DFT_SEED:-0}"
@@ -54,7 +56,8 @@ DFT_TFRECORD="${DFT_TFRECORD:-/zfsauton/scratch/eshau/womd/tf_example/training/t
 
 echo "host=${SLURMD_NODENAME:-unknown} gpu=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "indices=$DFT_INDICES iters=$DFT_ITERS expert_weight=$DFT_EXPERT_WEIGHT k=$DFT_K_TRAINABLE"
-echo "actor_lr=$DFT_ACTOR_LR ppo_clip=$DFT_PPO_CLIP value_epochs=$DFT_VALUE_EPOCHS pg_scale=$DFT_PG_SCALE"
+echo "actor_lr=$DFT_ACTOR_LR ppo_clip=$DFT_PPO_CLIP gae_lambda=$DFT_GAE_LAMBDA"
+echo "ppo_epochs=$DFT_PPO_EPOCHS value_epochs=$DFT_VALUE_EPOCHS pg_scale=$DFT_PG_SCALE"
 
 # The out_dir lives on a quota'd filesystem; job 27279 died mid-run on
 # `OSError: [Errno 122] Disk quota exceeded` writing train_log.jsonl. Fail fast
@@ -72,5 +75,6 @@ fi
   --iters "$DFT_ITERS" --expert_weight "$DFT_EXPERT_WEIGHT" \
   --k_trainable "$DFT_K_TRAINABLE" --prefix_len "$DFT_PREFIX_LEN" \
   --actor_lr "$DFT_ACTOR_LR" --ppo_clip "$DFT_PPO_CLIP" \
+  --gae_lambda "$DFT_GAE_LAMBDA" --ppo_epochs "$DFT_PPO_EPOCHS" \
   --value_epochs "$DFT_VALUE_EPOCHS" --pg_scale "$DFT_PG_SCALE" \
   --seed "$DFT_SEED" --out_dir "$DFT_OUT_DIR"
