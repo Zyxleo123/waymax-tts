@@ -44,11 +44,17 @@ DFT_EXPERT_WEIGHT="${DFT_EXPERT_WEIGHT:-0.0}"
 DFT_K_TRAINABLE="${DFT_K_TRAINABLE:-10}"
 DFT_PREFIX_LEN="${DFT_PREFIX_LEN:-5}"
 DFT_ACTOR_LR="${DFT_ACTOR_LR:-3e-5}"
-DFT_PPO_CLIP="${DFT_PPO_CLIP:-0.1}"
+DFT_PPO_CLIP="${DFT_PPO_CLIP:-0.01}"   # clip acts on the averaged ratio; start tight
 DFT_GAE_LAMBDA="${DFT_GAE_LAMBDA:-1.0}"   # 1.0 = Monte-Carlo advantage
 DFT_PPO_EPOCHS="${DFT_PPO_EPOCHS:-4}"
 DFT_VALUE_EPOCHS="${DFT_VALUE_EPOCHS:-10}"
 DFT_PG_SCALE="${DFT_PG_SCALE:-0}"   # 0 = auto (channels*prefix_len)
+# Equal sample/log-prob sigma floor (the actor requires equality). 0.1 adds ~1sigma
+# of ~10 m / 2.5 m/s / 18deg at the final step (outputs scaled by 100/25/pi); sweep
+# ~0.0025/0.005/0.01 for usable rollouts.
+DFT_SIGMA_FLOOR="${DFT_SIGMA_FLOOR:-0.1}"
+# Exact Gaussian trajectory-KL early-stop target (nats); see --target_kl help.
+DFT_TARGET_KL="${DFT_TARGET_KL:-0.05}"
 DFT_SEED="${DFT_SEED:-0}"
 DFT_OUT_DIR="${DFT_OUT_DIR:-/zfsauton/scratch/yixiz/waymax_rs/diffusion_ft/dppo}"
 DFT_CKPT="${DFT_CKPT:-/zfsauton/scratch/mineuih/waymax_rs/vla/pretrain_diffusion/pretrain_diffusion_without_subgoal_20260616_013642/latest}"
@@ -58,6 +64,7 @@ echo "host=${SLURMD_NODENAME:-unknown} gpu=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "indices=$DFT_INDICES iters=$DFT_ITERS expert_weight=$DFT_EXPERT_WEIGHT k=$DFT_K_TRAINABLE"
 echo "actor_lr=$DFT_ACTOR_LR ppo_clip=$DFT_PPO_CLIP gae_lambda=$DFT_GAE_LAMBDA"
 echo "ppo_epochs=$DFT_PPO_EPOCHS value_epochs=$DFT_VALUE_EPOCHS pg_scale=$DFT_PG_SCALE"
+echo "sigma_floor=$DFT_SIGMA_FLOOR target_kl=$DFT_TARGET_KL"
 
 # The out_dir lives on a quota'd filesystem; job 27279 died mid-run on
 # `OSError: [Errno 122] Disk quota exceeded` writing train_log.jsonl. Fail fast
@@ -77,4 +84,6 @@ fi
   --actor_lr "$DFT_ACTOR_LR" --ppo_clip "$DFT_PPO_CLIP" \
   --gae_lambda "$DFT_GAE_LAMBDA" --ppo_epochs "$DFT_PPO_EPOCHS" \
   --value_epochs "$DFT_VALUE_EPOCHS" --pg_scale "$DFT_PG_SCALE" \
+  --sigma_sample_floor "$DFT_SIGMA_FLOOR" --sigma_logprob_floor "$DFT_SIGMA_FLOOR" \
+  --target_kl "$DFT_TARGET_KL" \
   --seed "$DFT_SEED" --out_dir "$DFT_OUT_DIR"

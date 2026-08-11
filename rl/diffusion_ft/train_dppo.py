@@ -216,7 +216,7 @@ class DPPOTrainer:
                 self._rng, erng = jax.random.split(self._rng)
                 expert = (expert_target, cond1, cond2, mask, erng)
             m = self.actor.ppo_update(
-                cond1, cond2, mask, trace, old_lp, adv,
+                cond1, cond2, mask, trace, old_lp, adv, alive,
                 expert=expert, expert_weight=args.expert_weight,
                 target_kl=args.target_kl,
             )
@@ -282,6 +282,22 @@ class DPPOTrainer:
         for it in range(args.iters):
             t0 = time.time()
             buf, adv, returns, alive, rewards = self.collect(state)
+            # Advantage diagnostics on the *raw* (pre-normalization) GAE over the
+            # alive transitions. A zero gnorm with a healthy log-prob Jacobian is
+            # not a plumbing bug -- it is a degenerate advantage batch: `_merge`
+            # normalizes `(a - mean) / (std + 1e-8)`, so a zero-variance alive set
+            # (one alive element, or all-equal returns) collapses every advantage
+            # to exactly 0 and the PG gradient vanishes. Surface the cause here so
+            # the real run reports it instead of looking like a dead gradient.
+            m_alive = alive.reshape(-1).astype(bool)
+            a_alive = adv.reshape(-1)[m_alive]
+            r_alive = rewards.reshape(-1)[m_alive] if m_alive.any() else rewards.reshape(-1)
+            adv_diag = {
+                "n_alive": int(m_alive.sum()),
+                "adv_std_raw": float(a_alive.std()) if a_alive.size else 0.0,
+                "adv_absmean_raw": float(np.abs(a_alive).mean()) if a_alive.size else 0.0,
+                "reward_std": float(r_alive.std()),
+            }
             merged = self._merge(buf, adv, returns, alive)
             metrics = self.update(merged)
             ep_return = float(np.sum(rewards, axis=0).mean())
@@ -295,7 +311,7 @@ class DPPOTrainer:
                 "iter": it, "mean_episode_return": ep_return,
                 "mean_return_to_go": float(returns.mean()),
                 "n_steps": len(buf["cond1"]), "time_s": round(time.time() - t0, 2),
-                **metrics, **eval_row,
+                **adv_diag, **metrics, **eval_row,
             }
             with open(log_path, "a") as f:
                 f.write(json.dumps(row) + "\n")
@@ -307,8 +323,11 @@ class DPPOTrainer:
             eval_str = (f"eval[s/d]={eval_row['eval_return_stochastic']:.3f}/"
                         f"{eval_row['eval_return_deterministic']:.3f} " if eval_row else "")
             print(f"[dppo] it={it:04d} return={ep_return:.3f} {eval_str}"
+                  f"n_alive={adv_diag['n_alive']} advstd={adv_diag['adv_std_raw']:.3e} "
+                  f"rstd={adv_diag['reward_std']:.3e} "
                   f"pg={metrics.get('pg_loss',0):+.3e} exp={metrics.get('expert_term',0):.3e} "
-                  f"gnorm={metrics.get('grad_global_norm',0):.4f} "
+                  f"gnorm={metrics.get('grad_global_norm',0):.3e} "
+                  f"kl_g={metrics.get('kl_gauss',0):.3e} "
                   f"kl={metrics.get('approx_kl',0):.3e} "
                   f"kl_tx={metrics.get('approx_kl_transition',0):.3e} "
                   f"ratio-1={metrics.get('mean_ratio',1)-1:+.3e} "
@@ -366,7 +385,11 @@ def build_argparser() -> argparse.ArgumentParser:
                         "transition ratio compounds this over channels*prefix, so "
                         "start tight (~0.01) and watch kl_tx")
     p.add_argument("--ppo_epochs", type=int, default=4)
-    p.add_argument("--target_kl", type=float, default=0.05)
+    p.add_argument("--target_kl", type=float, default=0.05,
+                   help="early-stop on the exact Gaussian *trajectory* KL(old||candidate) "
+                        "in nats (kl_g), measured on the candidate before it commits. This "
+                        "is the true per-iteration policy move, not the averaged approx_kl; "
+                        "0.05 is tight -- sweep alongside sigma once rollouts look sane")
     p.add_argument("--actor_lr", type=float, default=3e-5)
     p.add_argument("--value_lr", type=float, default=1e-3)
     p.add_argument("--value_epochs", type=int, default=10,

@@ -106,6 +106,11 @@ class DiffusionRLActor:
             optax.adam(float(actor_lr)),
         )
         self._opt_state = self.tx.init(self._tparams)
+        # Behavior params = the params `collect` last sampled under. The KL gate
+        # measures the candidate policy against *this* snapshot (the policy that
+        # generated the data), not against the drifting current params. Refreshed
+        # in `collect`; seeded here so a `ppo_update` before any `collect` is safe.
+        self._behavior_tparams = self._tparams
 
     # ------------------------------------------------------------------ #
     def _trainable_fn(self, params):
@@ -121,6 +126,11 @@ class DiffusionRLActor:
         """
         if rng is None:
             self._rng, rng = jax.random.split(self._rng)
+        # Freeze the behavior policy for this data batch: the KL gate compares the
+        # PPO candidate against these params, so it must be the params that draw
+        # the trajectory. Collection within an iteration never updates params, so
+        # every replan step in the iteration shares one snapshot.
+        self._behavior_tparams = self._tparams
         shape = (cond1.shape[0], self.diffusion.denoise_fn.in_ch, self.diffusion.denoise_fn.horizon)
         traj, trace = self.diffusion.sample_with_trace(
             shape, cond1, cond2, cond2_mask, rng=rng,
@@ -172,18 +182,27 @@ class DiffusionRLActor:
         return jnp.stack(lps, axis=0)
 
     # ------------------------------------------------------------------ #
-    def _expert_loss(self, params, expert):
+    def _expert_loss(self, params, expert, alive_b):
         """Ordinary diffusion loss of the trainable denoiser on expert targets.
 
         ``expert`` is ``(target_btd, cond1, cond2, cond2_mask, rng)`` -- the
         normalized expert (log) trajectory and its frozen condition. Anchors the
-        trainable copy to the demonstration (DPPO + expert anchor)."""
+        trainable copy to the demonstration (DPPO + expert anchor). Averaged over
+        the *alive* samples only, so padded post-terminal replans do not tug the
+        anchor toward a stale expert target."""
         target_btd, ec1, ec2, emask, erng = expert
         fn = self._trainable_fn(params)
         x0 = jnp.transpose(target_btd, (0, 2, 1))  # [B,T,D] -> [B,D,T]
-        return jnp.mean(self.diffusion.loss_per_example(x0, ec1, ec2, emask, rng=erng, denoise_fn=fn))
+        lpe = self.diffusion.loss_per_example(x0, ec1, ec2, emask, rng=erng, denoise_fn=fn)  # [B]
+        return jnp.sum(lpe * alive_b) / jnp.maximum(jnp.sum(alive_b), 1.0)
 
-    def _ppo_loss(self, params, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
+    @staticmethod
+    def _wmean_kb(x_kb, w_b):
+        """Mean of ``[K, B]`` over the alive samples (weight ``[B]``, broadcast over K)."""
+        w = w_b[None, :]
+        return jnp.sum(x_kb * w) / jnp.maximum(jnp.sum(w) * x_kb.shape[0], 1.0)
+
+    def _ppo_loss(self, params, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b, alive_b,
                   expert=None, expert_weight=0.0):
         new_lp = self.log_probs(params, cond1, cond2, cond2_mask, trace)  # [K, B]
         log_ratio = new_lp - old_log_probs_kb                             # [K, B]
@@ -192,49 +211,95 @@ class DiffusionRLActor:
         unclipped = ratio * adv
         clipped = jnp.clip(ratio, 1.0 - self.ppo_clip, 1.0 + self.ppo_clip) * adv
         surrogate = jnp.minimum(unclipped, clipped)
+        # All reductions are over the *alive* samples: post-terminal padded replans
+        # carry adv==0 but still have a ratio, so an unweighted mean would dilute
+        # the PG term and mis-report KL/clip_frac. `_wmean_kb` divides by the alive
+        # count, not the padded n*B.
         # `_reduce_logdensity` averages the per-element log density over
         # channels*prefix_len, which keeps `ratio` near 1 (intended) but shrinks
         # the PG gradient by that same factor. `pg_scale` restores it so the PG
         # term is not swamped by the expert anchor; the clip still acts on the
         # un-scaled ratio, so the trust region is unchanged.
-        pg_raw = -jnp.mean(surrogate)
+        pg_raw = -self._wmean_kb(surrogate, alive_b)
         pg_loss = self.pg_scale * pg_raw
         # Schulman's nonnegative KL estimator `ratio - 1 - log(ratio)` -- always
-        # >= 0 and lower-variance than the raw `old - new` difference, which can
-        # go negative and mislead the early-stop gate.
-        approx_kl = jnp.mean(ratio - 1.0 - log_ratio)
+        # >= 0 and lower-variance than the raw `old - new` difference. Reported for
+        # diagnostics; the *gate* uses the exact Gaussian KL in `ppo_update`.
+        approx_kl = self._wmean_kb(ratio - 1.0 - log_ratio, alive_b)
         # `ratio` above is on the *averaged* log density (what the clip sees). The
         # per-transition ratio compounds over all `reduce_n` coordinates, so report
         # the trust region as the policy actually moves it: log_ratio * reduce_n.
         lr_t = log_ratio * self._reduce_n
         ratio_t = jnp.exp(lr_t)
-        approx_kl_transition = jnp.mean(ratio_t - 1.0 - lr_t)
+        approx_kl_transition = self._wmean_kb(ratio_t - 1.0 - lr_t, alive_b)
         # `expert` is a Python-level None-or-tuple at trace time, so a plain branch
         # is correct (and keeps the expert forward out of the graph when unused).
         if expert is not None:
-            expert_loss = self._expert_loss(params, expert)
+            expert_loss = self._expert_loss(params, expert, alive_b)
         else:
             expert_loss = jnp.asarray(0.0, dtype=jnp.float32)
         expert_term = expert_weight * expert_loss
         loss = pg_loss + expert_term
+        clip_frac = self._wmean_kb((jnp.abs(ratio - 1.0) > self.ppo_clip).astype(jnp.float32), alive_b)
         return loss, {"loss": loss, "pg_loss": pg_loss, "pg_raw": pg_raw,
                       "expert_loss": expert_loss, "expert_term": expert_term,
                       "approx_kl": approx_kl, "approx_kl_transition": approx_kl_transition,
-                      "mean_ratio": jnp.mean(ratio), "mean_ratio_transition": jnp.mean(ratio_t),
-                      "clip_frac": jnp.mean((jnp.abs(ratio - 1.0) > self.ppo_clip).astype(jnp.float32))}
+                      "mean_ratio": self._wmean_kb(ratio, alive_b),
+                      "mean_ratio_transition": self._wmean_kb(ratio_t, alive_b),
+                      "clip_frac": clip_frac}
 
-    def ppo_update(self, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
+    # ------------------------------------------------------------------ #
+    def _posterior_means_std(self, params, cond1, cond2, cond2_mask, trace):
+        """Per-transition posterior mean and std, both ``[K, B, C, T]``.
+
+        The std is the (param-independent) schedule posterior std; the mean is the
+        denoiser-dependent posterior mean. Used by the exact Gaussian KL gate.
+        """
+        fn = self._trainable_fn(params)
+        k = int(trace["timestep"].shape[0])
+        means, stds = [], []
+        for j in range(k):
+            mean, std, _ = self.diffusion._posterior_mean_std(
+                trace["x_t"][j], trace["timestep"][j], cond1, cond2, cond2_mask, denoise_fn=fn)
+            means.append(mean)
+            stds.append(std)
+        return jnp.stack(means, axis=0), jnp.stack(stds, axis=0)
+
+    def _transition_kl(self, mu_old, mu_new, std, alive_b):
+        """Exact KL(old || candidate) of the reverse-diffusion policy, in nats.
+
+        Both policies are diagonal Gaussians with the *same* (param-independent)
+        std, so the KL is ``0.5 * sum((mu_old - mu_new)/sigma)^2`` over the executed
+        prefix coordinates -- no ``exp`` of a large log-ratio, so it cannot overflow
+        or go negative. Summed over the ``K`` late steps (the trajectory KL
+        factorizes over the reverse chain) and averaged over the alive samples.
+        """
+        std_lp = jnp.maximum(std, self.sigma_logprob_floor)          # [K, B, C, T]
+        per_elt = 0.5 * ((mu_new - mu_old) / std_lp) ** 2            # [K, B, C, T]
+        t_dim = per_elt.shape[3]
+        if self.prefix_len is None:
+            kl_kb = jnp.sum(per_elt, axis=(2, 3))                    # [K, B]
+        else:
+            mt = (jnp.arange(t_dim) < int(self.prefix_len)).astype(per_elt.dtype)
+            kl_kb = jnp.sum(per_elt * mt[None, None, None, :], axis=(2, 3))
+        kl_b = jnp.sum(kl_kb, axis=0)                                # [B], trajectory KL
+        return jnp.sum(kl_b * alive_b) / jnp.maximum(jnp.sum(alive_b), 1.0)
+
+    def ppo_update(self, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b, alive_b,
                    *, expert=None, expert_weight=0.0, target_kl=None):
         """One clipped-PPO gradient step on the trainable denoiser only.
 
         With ``expert`` given, adds ``expert_weight`` * (expert diffusion loss) --
         the DPPO + expert-anchor variant.
 
-        The loss (and its metrics) is evaluated at the *current* params, i.e. the
-        drift accumulated by prior epochs. When ``target_kl`` is given and that
-        pre-update ``approx_kl`` already exceeds it, the gradient step is skipped
-        and ``metrics["applied"] == 0.0`` -- so the caller stops *before* taking
-        the step that crosses the trust region, not one step after.
+        The trust-region gate is on the *candidate*: grads are formed at the current
+        params, a candidate params + optimizer state are constructed, and the exact
+        Gaussian KL of the candidate policy against the behavior snapshot
+        (``_behavior_tparams``, frozen in ``collect``) is measured. If it exceeds
+        ``target_kl`` the candidate is discarded and ``metrics["applied"] == 0.0``,
+        so the step that would cross the trust region is never committed -- unlike a
+        pre-update KL, which is ~0 at epoch 0 and only rejects the *next* step.
+        ``metrics["kl_gauss"]`` is the realized post-update KL (0 when discarded).
         """
         if self.pg_scale is None or self._reduce_n is None:
             # trace["x_t"] is [K, B, C, T]; the log density was averaged over
@@ -245,15 +310,25 @@ class DiffusionRLActor:
             if self.pg_scale is None:
                 self.pg_scale = self._reduce_n
         (loss, metrics), grads = jax.value_and_grad(self._ppo_loss, has_aux=True)(
-            self._tparams, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b,
+            self._tparams, cond1, cond2, cond2_mask, trace, old_log_probs_kb, adv_b, alive_b,
             expert, expert_weight,
         )
         metrics = dict(metrics)
-        applied = target_kl is None or float(np.asarray(metrics["approx_kl"])) <= float(target_kl)
+        # Build the candidate (params + optimizer state) but do not commit yet.
+        cand_updates, cand_opt_state = self.tx.update(grads, self._opt_state, self._tparams)
+        cand_params = optax.apply_updates(self._tparams, cand_updates)
+        # Exact KL of the candidate against the behavior policy (the data-generating
+        # snapshot), not against the current params.
+        mu_old, std = self._posterior_means_std(self._behavior_tparams, cond1, cond2, cond2_mask, trace)
+        mu_cand, _ = self._posterior_means_std(cand_params, cond1, cond2, cond2_mask, trace)
+        kl_gauss = self._transition_kl(mu_old, mu_cand, std, alive_b)
+        applied = target_kl is None or float(np.asarray(kl_gauss)) <= float(target_kl)
         if applied:
-            updates, self._opt_state = self.tx.update(grads, self._opt_state, self._tparams)
-            self._tparams = optax.apply_updates(self._tparams, updates)
+            self._opt_state = cand_opt_state
+            self._tparams = cand_params
         metrics["grad_global_norm"] = optax.global_norm(grads)
+        metrics["kl_gauss"] = kl_gauss if applied else jnp.asarray(0.0, dtype=jnp.float32)
+        metrics["kl_gauss_candidate"] = kl_gauss
         metrics["applied"] = jnp.asarray(1.0 if applied else 0.0, dtype=jnp.float32)
         return metrics
 
